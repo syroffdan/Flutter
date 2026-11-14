@@ -2,9 +2,13 @@ import 'package:flutter/material.dart';
 
 import 'screens/schedule_screen.dart';
 import 'services/auth_service.dart';
+import 'services/notification_service.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  await NotificationService.instance.initialize();
+
   runApp(const SMTUApp());
 }
 

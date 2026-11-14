@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'notification_settings_screen.dart';
+import '../services/notification_service.dart';
 import 'room_map_screen.dart';
 import 'profile_screen.dart';
 import '../services/auth_service.dart';
@@ -29,6 +31,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   GroupRef? _selectedGroup;
   GroupSchedule? _schedule;
   late final Future<void> _groupsFuture;
+  final NotificationService _notificationService = NotificationService.instance;
   bool _loadingGroups = true;
   bool _loadingSchedule = false;
   bool _isAuthenticated = false;
@@ -74,6 +77,16 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
     if (authenticated) {
       await _loadStudentGroup();
     }
+  }
+
+  Future<void> _openNotificationSettings() async {
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const NotificationSettingsScreen()),
+    );
+
+    if (!mounted || _schedule == null) return;
+
+    await _notificationService.syncSchedule(_schedule!);
   }
 
   Future<void> _openProfile() async {
@@ -219,6 +232,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
           _weekFilter = 'down';
         }
       });
+      await _notificationService.syncSchedule(schedule);
     } catch (e) {
       if (!mounted) return;
 
@@ -336,6 +350,11 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
             tooltip: 'Обновить',
             onPressed: _loadingSchedule || _loadingGroups ? null : _refresh,
             icon: const Icon(Icons.refresh),
+          ),
+          IconButton(
+            tooltip: 'Настройки уведомлений',
+            onPressed: _openNotificationSettings,
+            icon: const Icon(Icons.notifications_outlined),
           ),
           if (_checkingSession || _loadingStudentGroup)
             const Padding(

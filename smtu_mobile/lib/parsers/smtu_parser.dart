@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:html/dom.dart';
 import 'package:html/parser.dart' as html_parser;
 
@@ -105,6 +106,7 @@ class SmtuParser {
         if (cells.length < 5) continue;
 
         final time = row.querySelector('th')?.text.trim() ?? '';
+        debugPrint('TIME raw [$dayName]: "$time"');
 
         final week = _detectWeek(row, cells[0]);
         final room = cells[1].text.trim();
