@@ -64,6 +64,19 @@ class GroupSchedule {
   });
 
   WeekType get currentWeek => SmtuParserWeekHelper.parseCurrentWeek(dateInfo);
+
+  /// Неделя, к которой относятся ближайшие учебные дни. Начиная с воскресенья
+  /// уже начинается следующая неделя, поэтому показываем её тип.
+  WeekType get displayWeek => displayWeekAt(DateTime.now());
+
+  WeekType displayWeekAt(DateTime now) {
+    final week = currentWeek;
+
+    if (week != WeekType.up && week != WeekType.down) return week;
+    if (now.weekday != DateTime.sunday) return week;
+
+    return week == WeekType.up ? WeekType.down : WeekType.up;
+  }
 }
 
 class SmtuParserWeekHelper {

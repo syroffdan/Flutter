@@ -79,6 +79,121 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
     }
   }
 
+  Future<void> _openAlarmForLesson(Lesson lesson, String dayName) async {
+    final initialMinutes = await _notificationService.getMinutesBefore();
+    final weekday = _notificationService.weekdayFromName(dayName);
+
+    if (!mounted) return;
+
+    final minutesBefore = await _showAlarmDialog(
+      lesson,
+      dayName,
+      initialMinutes,
+    );
+
+    if (minutesBefore == null || !mounted) return;
+
+    final opened = await _notificationService.openSystemAlarmForLesson(
+      lesson,
+      minutesBefore: minutesBefore,
+      weekday: weekday,
+    );
+
+    if (!mounted || opened) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Не удалось открыть будильник: время пары не распознано или '
+          'приложение «Часы» недоступно.',
+        ),
+      ),
+    );
+  }
+
+  Future<int?> _showAlarmDialog(
+    Lesson lesson,
+    String dayName,
+    int initialMinutes,
+  ) {
+    var minutes = initialMinutes;
+
+    return showDialog<int>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final theme = Theme.of(context);
+          final alarmTime = _notificationService.alarmTimeLabel(
+            lesson.time,
+            minutes,
+          );
+
+          return AlertDialog(
+            title: const Text('Будильник к паре'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  lesson.subject.isEmpty ? 'Название не указано' : lesson.subject,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '$dayName, начало пары: ${lesson.time}',
+                  style: theme.textTheme.bodySmall,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  minutes == 0
+                      ? 'Будильник в начале пары'
+                      : 'За $minutes минут до начала',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                if (alarmTime != null)
+                  Text(
+                    'Будильник на $dayName, $alarmTime',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                Slider(
+                  value: minutes.toDouble(),
+                  min: 0,
+                  max: 180,
+                  divisions: 36,
+                  label: '$minutes мин.',
+                  onChanged: (value) {
+                    setDialogState(() {
+                      minutes = value.round();
+                    });
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Отмена'),
+              ),
+              FilledButton(
+                onPressed: alarmTime == null
+                    ? null
+                    : () => Navigator.pop(dialogContext, minutes),
+                child: const Text('Принять'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _openNotificationSettings() async {
     await Navigator.of(context).push<bool>(
       MaterialPageRoute(builder: (_) => const NotificationSettingsScreen()),
@@ -224,11 +339,13 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         _schedule = schedule;
         _loadingSchedule = false;
 
-        // По умолчанию показываем текущую неделю,
-        // если сайт смог определить её тип.
-        if (schedule.currentWeek == WeekType.up) {
+        // По умолчанию показываем неделю, к которой относятся ближайшие
+        // учебные дни: с воскресенья это уже следующая неделя.
+        final displayWeek = schedule.displayWeek;
+
+        if (displayWeek == WeekType.up) {
           _weekFilter = 'up';
-        } else if (schedule.currentWeek == WeekType.down) {
+        } else if (displayWeek == WeekType.down) {
           _weekFilter = 'down';
         }
       });
@@ -524,6 +641,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   }
 
   Widget _buildWeekSelector() {
+    final theme = Theme.of(context);
+    final displayWeek = _schedule?.displayWeek ?? WeekType.unknown;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -531,6 +651,15 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
           'Неделя',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
         ),
+        if (displayWeek == WeekType.up || displayWeek == WeekType.down) ...[
+          const SizedBox(height: 4),
+          Text(
+            'Актуальная: ${_weekTypeLabel(displayWeek)}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
         const SizedBox(height: 9),
         Wrap(
           spacing: 8,
@@ -684,6 +813,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
               onTap: lesson.room.trim().isNotEmpty
                   ? () => _openRoomMap(lesson.room)
                   : null,
+              onSetAlarm: () => _openAlarmForLesson(lesson, day.dayName),
             ),
           ),
         ),
@@ -697,12 +827,14 @@ class _LessonCard extends StatelessWidget {
   final String weekLabel;
   final Color weekColor;
   final VoidCallback? onTap;
+  final VoidCallback onSetAlarm;
 
   const _LessonCard({
     required this.lesson,
     required this.weekLabel,
     required this.weekColor,
     required this.onTap,
+    required this.onSetAlarm,
   });
 
   @override
@@ -829,6 +961,14 @@ class _LessonCard extends StatelessWidget {
                       ),
                     ],
                   ],
+                ),
+              ),
+              IconButton(
+                onPressed: onSetAlarm,
+                tooltip: 'Поставить будильник',
+                icon: Icon(
+                  Icons.alarm_add_outlined,
+                  color: theme.colorScheme.primary,
                 ),
               ),
             ],
