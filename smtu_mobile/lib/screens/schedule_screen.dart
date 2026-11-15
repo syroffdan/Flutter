@@ -135,7 +135,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  lesson.subject.isEmpty ? 'Название не указано' : lesson.subject,
+                  lesson.subject.isEmpty
+                      ? 'Название не указано'
+                      : lesson.subject,
                   style: theme.textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.bold,
                   ),

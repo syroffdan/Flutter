@@ -13,12 +13,35 @@ class NotificationSettingsScreen extends StatefulWidget {
 
 class _NotificationSettingsScreenState
     extends State<NotificationSettingsScreen> {
+  String _planDateLabel(AlarmPlanEntry entry) {
+    final date = entry.triggerAt;
+
+    if (date == null) return entry.dayName;
+
+    final day = date.day.toString().padLeft(2, '0');
+    final month = date.month.toString().padLeft(2, '0');
+
+    return '${entry.dayName}, $day.$month';
+  }
+
+  String _planTimeLabel(AlarmPlanEntry entry) {
+    final date = entry.triggerAt;
+
+    if (date == null) return entry.note ?? 'не ставится';
+
+    final hour = date.hour.toString().padLeft(2, '0');
+    final minute = date.minute.toString().padLeft(2, '0');
+
+    return '$hour:$minute';
+  }
+
   final NotificationService _service = NotificationService.instance;
 
   bool _enabled = false;
   bool _alarmsEnabled = false;
   int _minutesBefore = 15;
   bool _loading = true;
+  List<AlarmPlanEntry> _plan = const [];
 
   @override
   void initState() {
@@ -30,6 +53,12 @@ class _NotificationSettingsScreenState
     final enabled = await _service.isEnabled();
     final alarmsEnabled = await _service.isAlarmsEnabled();
     final minutes = await _service.getMinutesBefore();
+    final schedule = _service.lastSchedule;
+    final alarmMinutes = await _service.getAlarmMinutesBefore();
+
+    final plan = schedule == null
+        ? const <AlarmPlanEntry>[]
+        : await _service.describeAlarms(schedule, alarmMinutes);
 
     if (!mounted) return;
 
@@ -37,6 +66,7 @@ class _NotificationSettingsScreenState
       _enabled = enabled;
       _alarmsEnabled = alarmsEnabled;
       _minutesBefore = minutes;
+      _plan = plan;
       _loading = false;
     });
   }
@@ -130,6 +160,8 @@ class _NotificationSettingsScreenState
 
     final result = await _service.createWeeklyAlarms(minutesBefore: minutes);
 
+    await _refreshPlan();
+
     if (!mounted) return;
 
     if (result.alreadyCreated) {
@@ -139,10 +171,85 @@ class _NotificationSettingsScreenState
     } else if (result.created > 0) {
       _showMessage('Создано будильников: ${result.created}.');
     } else {
+      final details = result.error;
+
       _showMessage(
-        'Не удалось создать будильники: приложение «Часы» недоступно.',
+        details == null
+            ? 'Не удалось создать будильники: время пар не распознано.'
+            : 'Не удалось создать будильники: $details',
       );
     }
+  }
+
+  Future<void> _refreshPlan() async {
+    final schedule = _service.lastSchedule;
+
+    if (schedule == null) return;
+
+    final minutes = await _service.getAlarmMinutesBefore();
+    final plan = await _service.describeAlarms(schedule, minutes);
+
+    if (!mounted) return;
+
+    setState(() {
+      _plan = plan;
+    });
+  }
+
+  Future<void> _editAlarm(AlarmPlanEntry entry) async {
+    final weekday = entry.weekday;
+
+    if (weekday == null) return;
+
+    final current = entry.triggerAt;
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: current == null
+          ? TimeOfDay.now()
+          : TimeOfDay(hour: current.hour, minute: current.minute),
+    );
+
+    if (picked == null || !mounted) return;
+
+    final hour = picked.hour.toString().padLeft(2, '0');
+    final minute = picked.minute.toString().padLeft(2, '0');
+
+    await _service.setAlarmTime(weekday, '$hour:$minute');
+    await _service.createWeeklyAlarms(force: true);
+    await _refreshPlan();
+
+    if (!mounted) return;
+
+    _showMessage('Время будильника на ${entry.dayName} обновлено.');
+  }
+
+  Future<void> _deleteAlarm(AlarmPlanEntry entry) async {
+    final weekday = entry.weekday;
+
+    if (weekday == null) return;
+
+    await _service.setAlarmDisabled(weekday, true);
+    await _service.createWeeklyAlarms(force: true);
+    await _refreshPlan();
+
+    if (!mounted) return;
+
+    _showMessage('Будильник на ${entry.dayName} удалён.');
+  }
+
+  Future<void> _restoreAlarm(AlarmPlanEntry entry) async {
+    final weekday = entry.weekday;
+
+    if (weekday == null) return;
+
+    await _service.setAlarmDisabled(weekday, false);
+    await _service.resetAlarmTime(weekday);
+    await _service.createWeeklyAlarms(force: true);
+    await _refreshPlan();
+
+    if (!mounted) return;
+
+    _showMessage('Будильник на ${entry.dayName} возвращён.');
   }
 
   void _showMessage(String text) {
@@ -306,6 +413,76 @@ class _NotificationSettingsScreenState
               onChanged: _changeAlarmsEnabled,
             ),
           ),
+
+          if (_alarmsEnabled && _plan.isNotEmpty) ...[
+            const SizedBox(height: 12),
+
+            Card(
+              elevation: 0,
+              color: theme.colorScheme.surfaceContainerLow,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: theme.colorScheme.outlineVariant),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Запланированные будильники',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    ..._plan.map(
+                      (entry) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Row(
+                          children: [
+                            Expanded(child: Text(_planDateLabel(entry))),
+                            Text(
+                              _planTimeLabel(entry),
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: entry.triggerAt == null
+                                    ? theme.colorScheme.outline
+                                    : theme.colorScheme.primary,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            if (entry.triggerAt != null) ...[
+                              IconButton(
+                                tooltip: 'Изменить время',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () => _editAlarm(entry),
+                                icon: const Icon(Icons.edit_outlined, size: 20),
+                              ),
+                              IconButton(
+                                tooltip: 'Удалить',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () => _deleteAlarm(entry),
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  size: 20,
+                                ),
+                              ),
+                            ] else if (entry.note == 'отключён вручную')
+                              IconButton(
+                                tooltip: 'Вернуть будильник',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () => _restoreAlarm(entry),
+                                icon: const Icon(Icons.restart_alt, size: 20),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
 
           const SizedBox(height: 24),
 

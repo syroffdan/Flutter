@@ -4,12 +4,14 @@ import 'screens/schedule_screen.dart';
 import 'services/auth_service.dart';
 import 'services/notification_service.dart';
 
-Future<void> main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await NotificationService.instance.initialize();
-
   runApp(const SMTUApp());
+
+  // Уведомления инициализируем в фоне: если плагин недоступен или падает
+  // на конкретном устройстве, интерфейс всё равно запустится.
+  NotificationService.instance.initialize().ignore();
 }
 
 class SMTUApp extends StatelessWidget {
