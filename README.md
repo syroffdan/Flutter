@@ -1,4 +1,4 @@
-# SMTU Mobile
+# ISU Mobile
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Мобильный клиент СПбГМТУ на Flutter: расписание занятий по
