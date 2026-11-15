@@ -1,17 +1,26 @@
 import 'package:flutter/material.dart';
 
+import 'screens/notification_settings_screen.dart';
 import 'screens/schedule_screen.dart';
 import 'services/auth_service.dart';
 import 'services/notification_service.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Ждём инициализацию уведомлений, чтобы понять, запущено ли приложение
+  // нажатием на уведомление о будильнике. Если плагин недоступен или падает
+  // на конкретном устройстве, интерфейс всё равно запустится.
+  try {
+    await NotificationService.instance.initialize().timeout(
+      const Duration(seconds: 5),
+    );
+  } catch (_) {}
 
   runApp(const SMTUApp());
 
-  // Уведомления инициализируем в фоне: если плагин недоступен или падает
-  // на конкретном устройстве, интерфейс всё равно запустится.
-  NotificationService.instance.initialize().ignore();
+  // Возвращаем в шторку уведомление о ближайшем будильнике после перезапуска.
+  NotificationService.instance.refreshAlarmStatus().ignore();
 }
 
 class SMTUApp extends StatelessWidget {
@@ -40,6 +49,46 @@ class StartupScreen extends StatefulWidget {
 
 class _StartupScreenState extends State<StartupScreen> {
   final AuthService _authService = AuthService();
+  final NotificationService _notifications = NotificationService.instance;
+
+  bool _openingAlarms = false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _notifications.onOpenAlarmsRequested = _openAlarmsPage;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_notifications.consumeOpenAlarmsOnLaunch()) {
+        _openAlarmsPage();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _notifications.onOpenAlarmsRequested = null;
+    super.dispose();
+  }
+
+  // Нажатие на уведомление о будильнике открывает страницу с будильниками.
+  Future<void> _openAlarmsPage() async {
+    if (!mounted || _openingAlarms) return;
+
+    _openingAlarms = true;
+
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const NotificationSettingsScreen()),
+    );
+
+    _openingAlarms = false;
+
+    if (!mounted) return;
+
+    // На странице могли изменить будильники — обновляем уведомление в шторке.
+    await _notifications.refreshAlarmStatus();
+  }
 
   Future<bool?> _openLogin() {
     return Navigator.of(context).push<bool>(

@@ -36,6 +36,15 @@ class NotificationService {
 
   static const int _notificationIdBase = 5100;
 
+  /// Постоянное уведомление в шторке с ближайшим автоматическим будильником.
+  static const int _alarmStatusId = 5000;
+  static const String _alarmStatusPayload = 'open_alarms';
+  static const String _alarmStatusChannelId = 'alarm_status';
+
+  /// План будильников на текущую неделю: нужен, чтобы показать список
+  /// будильников, когда расписание ещё не загружено.
+  static const String _alarmsPlanKey = 'lesson_alarms_plan_v1';
+
   static const NotificationDetails _reminderDetails = NotificationDetails(
     android: AndroidNotificationDetails(
       'lesson_reminders',
@@ -47,8 +56,20 @@ class NotificationService {
     ),
   );
 
-
   bool _initialized = false;
+
+  /// Открыть страницу будильников по нажатию на уведомление.
+  void Function()? onOpenAlarmsRequested;
+
+  bool _openAlarmsOnLaunch = false;
+
+  /// Приложение было запущено нажатием на уведомление о будильнике.
+  /// Флаг сбрасывается при чтении.
+  bool consumeOpenAlarmsOnLaunch() {
+    final value = _openAlarmsOnLaunch;
+    _openAlarmsOnLaunch = false;
+    return value;
+  }
 
   GroupSchedule? _lastSchedule;
 
@@ -77,9 +98,26 @@ class NotificationService {
 
     const settings = InitializationSettings(android: androidSettings);
 
-    await _plugin.initialize(settings: settings);
+    await _plugin.initialize(
+      settings: settings,
+      onDidReceiveNotificationResponse: _onNotificationResponse,
+    );
+
+    final launchDetails = await _plugin.getNotificationAppLaunchDetails();
+
+    if ((launchDetails?.didNotificationLaunchApp ?? false) &&
+        launchDetails?.notificationResponse?.payload == _alarmStatusPayload) {
+      _openAlarmsOnLaunch = true;
+    }
 
     _initialized = true;
+  }
+
+  void _onNotificationResponse(NotificationResponse response) {
+    if (response.payload != _alarmStatusPayload) return;
+
+    _openAlarmsOnLaunch = true;
+    onOpenAlarmsRequested?.call();
   }
 
   Future<bool> requestPermission() async {
@@ -288,9 +326,7 @@ class NotificationService {
         PlannedAlarm(
           dayName: day.dayName,
           weekday: weekday,
-          time: _formatMinutes(
-            (startMinutes - minutesBefore) % (24 * 60),
-          ),
+          time: _formatMinutes((startMinutes - minutesBefore) % (24 * 60)),
         ),
       );
     }
@@ -398,12 +434,149 @@ class NotificationService {
     return entries;
   }
 
+  /// Ближайший будильник из [entries]; null, если все они уже в прошлом.
+  AlarmPlanEntry? nearestAlarm(List<AlarmPlanEntry> entries) {
+    final now = DateTime.now();
+    AlarmPlanEntry? nearest;
+
+    for (final entry in entries) {
+      final trigger = entry.triggerAt;
+
+      if (trigger == null || !trigger.isAfter(now)) continue;
+
+      if (nearest == null || trigger.isBefore(nearest.triggerAt!)) {
+        nearest = entry;
+      }
+    }
+
+    return nearest;
+  }
+
+  /// Показывает в шторке постоянное уведомление о ближайшем автоматическом
+  /// будильнике (включая изменённое вручную время) и разрешает показывать
+  /// его на экране блокировки. Нажатие открывает страницу будильников.
+  Future<void> refreshAlarmStatus() async {
+    try {
+      await initialize();
+
+      if (!await isAlarmsEnabled()) {
+        await _plugin.cancel(id: _alarmStatusId);
+        return;
+      }
+
+      final schedule = _lastSchedule;
+      final entries = schedule == null
+          ? await savedAlarmPlan()
+          : await describeAlarms(schedule, await getAlarmMinutesBefore());
+
+      final nearest = nearestAlarm(entries);
+
+      if (nearest == null) {
+        await _plugin.cancel(id: _alarmStatusId);
+        return;
+      }
+
+      final trigger = nearest.triggerAt!;
+      final time = _formatMinutes(trigger.hour * 60 + trigger.minute);
+
+      await _plugin.show(
+        id: _alarmStatusId,
+        title: 'Будильник в $time',
+        body:
+            'Ближайший: ${_dayLabel(trigger)}. Нажмите, чтобы открыть список.',
+        payload: _alarmStatusPayload,
+        notificationDetails: NotificationDetails(
+          android: AndroidNotificationDetails(
+            _alarmStatusChannelId,
+            'Ближайший будильник',
+            channelDescription:
+                'Постоянное уведомление о ближайшем автоматическом будильнике',
+            importance: Importance.defaultImportance,
+            priority: Priority.defaultPriority,
+            playSound: false,
+            enableVibration: false,
+            onlyAlertOnce: true,
+            ongoing: true,
+            autoCancel: false,
+            showWhen: true,
+            when: trigger.millisecondsSinceEpoch,
+            // Содержимое видно и на экране блокировки.
+            visibility: NotificationVisibility.public,
+            category: AndroidNotificationCategory.alarm,
+            channelShowBadge: false,
+          ),
+        ),
+      );
+    } catch (_) {
+      // Уведомление о будильнике не критично для работы приложения.
+    }
+  }
+
+  String _dayLabel(DateTime date) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final target = DateTime(date.year, date.month, date.day);
+    final difference = target.difference(today).inDays;
+
+    const weekdays = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
+
+    final day = date.day.toString().padLeft(2, '0');
+    final month = date.month.toString().padLeft(2, '0');
+
+    if (difference == 0) return 'сегодня, $day.$month';
+    if (difference == 1) return 'завтра, $day.$month';
+
+    return '${weekdays[date.weekday - 1]}, $day.$month';
+  }
+
+  /// Сохранённый план будильников: используется, когда расписание ещё не
+  /// загружено (например, при запуске по нажатию на уведомление).
+  Future<List<AlarmPlanEntry>> savedAlarmPlan() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_alarmsPlanKey);
+
+    if (raw == null || raw.isEmpty) return const [];
+
+    try {
+      final decoded = jsonDecode(raw) as List<dynamic>;
+
+      return decoded.map((item) {
+        final map = item as Map<String, dynamic>;
+
+        return AlarmPlanEntry(
+          dayName: map['dayName'] as String,
+          weekday: map['weekday'] as int?,
+          triggerAt: DateTime.fromMillisecondsSinceEpoch(
+            map['triggerAtMillis'] as int,
+          ),
+        );
+      }).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> _savePlanEntries(List<AlarmPlanEntry> entries) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final data = entries
+        .where((entry) => entry.triggerAt != null)
+        .map(
+          (entry) => {
+            'dayName': entry.dayName,
+            'weekday': entry.weekday,
+            'triggerAtMillis': entry.triggerAt!.millisecondsSinceEpoch,
+          },
+        )
+        .toList();
+
+    await prefs.setString(_alarmsPlanKey, jsonEncode(data));
+  }
+
   /// Создаёт будильники в системных «Часах» на все учебные дни недели.
   /// Повторно на ту же неделю не создаёт, если не передан [force].
-  Future<({int created, bool alreadyCreated, String? error})> createWeeklyAlarms({
-    int? minutesBefore,
-    bool force = false,
-  }) async {
+  Future<({int created, bool alreadyCreated, String? error})>
+  createWeeklyAlarms({int? minutesBefore, bool force = false}) async {
     final schedule = _lastSchedule;
 
     if (schedule == null) {
@@ -423,7 +596,9 @@ class NotificationService {
       return (created: 0, alreadyCreated: true, error: null);
     }
 
-    final alarms = (await describeAlarms(schedule, minutes))
+    final described = await describeAlarms(schedule, minutes);
+
+    final alarms = described
         .where((entry) => entry.triggerAt != null)
         .map(
           (entry) => ScheduledAlarm(
@@ -439,7 +614,10 @@ class NotificationService {
 
     if (result.ok) {
       await prefs.setString(_alarmsWeekKey, signature);
+      await _savePlanEntries(described);
     }
+
+    await refreshAlarmStatus();
 
     return (
       created: result.ok ? alarms.length : 0,
@@ -550,6 +728,10 @@ class NotificationService {
     }
 
     await _plugin.cancelAll();
+
+    // Постоянное уведомление о ближайшем будильнике не зависит от
+    // напоминаний о парах.
+    await refreshAlarmStatus();
 
     if (!await isEnabled()) return;
 

@@ -56,8 +56,9 @@ class _NotificationSettingsScreenState
     final schedule = _service.lastSchedule;
     final alarmMinutes = await _service.getAlarmMinutesBefore();
 
+    // Если расписание ещё не загружено, показываем последний сохранённый план.
     final plan = schedule == null
-        ? const <AlarmPlanEntry>[]
+        ? await _service.savedAlarmPlan()
         : await _service.describeAlarms(schedule, alarmMinutes);
 
     if (!mounted) return;
@@ -113,6 +114,7 @@ class _NotificationSettingsScreenState
     if (!value) {
       await _service.setAlarmsEnabled(false);
       await _service.resetWeeklyAlarmsFlag();
+      await _service.refreshAlarmStatus();
 
       if (!mounted) return;
 
@@ -130,9 +132,7 @@ class _NotificationSettingsScreenState
     final schedule = _service.lastSchedule;
 
     if (schedule == null) {
-      _showMessage(
-        'Сначала загрузите расписание на экране «Расписание».',
-      );
+      _showMessage('Сначала загрузите расписание на экране «Расписание».');
       return;
     }
 
@@ -165,9 +165,7 @@ class _NotificationSettingsScreenState
     if (!mounted) return;
 
     if (result.alreadyCreated) {
-      _showMessage(
-        'Будильники на эту неделю уже созданы в приложении «Часы».',
-      );
+      _showMessage('Будильники на эту неделю уже созданы в приложении «Часы».');
     } else if (result.created > 0) {
       _showMessage('Создано будильников: ${result.created}.');
     } else {
@@ -201,6 +199,11 @@ class _NotificationSettingsScreenState
 
     if (weekday == null) return;
 
+    if (_service.lastSchedule == null) {
+      _showMessage('Расписание ещё загружается. Попробуйте чуть позже.');
+      return;
+    }
+
     final current = entry.triggerAt;
     final picked = await showTimePicker(
       context: context,
@@ -228,6 +231,11 @@ class _NotificationSettingsScreenState
 
     if (weekday == null) return;
 
+    if (_service.lastSchedule == null) {
+      _showMessage('Расписание ещё загружается. Попробуйте чуть позже.');
+      return;
+    }
+
     await _service.setAlarmDisabled(weekday, true);
     await _service.createWeeklyAlarms(force: true);
     await _refreshPlan();
@@ -242,6 +250,11 @@ class _NotificationSettingsScreenState
 
     if (weekday == null) return;
 
+    if (_service.lastSchedule == null) {
+      _showMessage('Расписание ещё загружается. Попробуйте чуть позже.');
+      return;
+    }
+
     await _service.setAlarmDisabled(weekday, false);
     await _service.resetAlarmTime(weekday);
     await _service.createWeeklyAlarms(force: true);
@@ -253,15 +266,10 @@ class _NotificationSettingsScreenState
   }
 
   void _showMessage(String text) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(text)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
 
-  Future<int?> _showAlarmDialog(
-    GroupSchedule schedule,
-    int initialMinutes,
-  ) {
+  Future<int?> _showAlarmDialog(GroupSchedule schedule, int initialMinutes) {
     var minutes = initialMinutes;
 
     return showDialog<int>(
@@ -414,7 +422,7 @@ class _NotificationSettingsScreenState
             ),
           ),
 
-          if (_alarmsEnabled && _plan.isNotEmpty) ...[
+          if (_plan.isNotEmpty) ...[
             const SizedBox(height: 12),
 
             Card(
