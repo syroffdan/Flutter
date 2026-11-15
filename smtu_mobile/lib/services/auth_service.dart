@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:dio_cookie_manager/dio_cookie_manager.dart';
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:path_provider/path_provider.dart';
 
@@ -12,6 +13,10 @@ import '../models/auth_result.dart';
 
 class AuthService {
   static const String baseUrl = 'https://isu.smtu.ru';
+
+  static const String _loginKey = 'isu_saved_login';
+  static const String _passwordKey = 'isu_saved_password';
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
 
   // 1. Асинхронно создаем хранилище куки (сохраняет их в файл)
   late final Future<PersistCookieJar> _cookieJarFuture = _createCookieJar();
@@ -208,6 +213,8 @@ class AuthService {
       if (_isAuthenticated(homeResponse.data)) {
         debugPrint('[AUTH] SUCCESS');
 
+        await _saveCredentials(username, password);
+
         return const AuthResult(success: true, message: 'Авторизация успешна.');
       }
 
@@ -250,9 +257,51 @@ class AuthService {
     }
   }
 
+  /// Восстанавливает вход без участия пользователя: сначала проверяет
+  /// сохранённую сессию, затем пробует войти по сохранённым данным.
+  Future<bool> restoreSession() async {
+    if (await checkSession()) return true;
+
+    final credentials = await _readCredentials();
+    if (credentials == null) return false;
+
+    final result = await login(
+      username: credentials.$1,
+      password: credentials.$2,
+    );
+
+    return result.success;
+  }
+
+  Future<void> _saveCredentials(String username, String password) async {
+    try {
+      await _secureStorage.write(key: _loginKey, value: username);
+      await _secureStorage.write(key: _passwordKey, value: password);
+    } catch (e) {
+      debugPrint('[AUTH] Failed to save credentials: $e');
+    }
+  }
+
+  Future<(String, String)?> _readCredentials() async {
+    try {
+      final username = await _secureStorage.read(key: _loginKey);
+      final password = await _secureStorage.read(key: _passwordKey);
+
+      if (username == null || password == null) return null;
+      if (username.isEmpty || password.isEmpty) return null;
+
+      return (username, password);
+    } catch (e) {
+      debugPrint('[AUTH] Failed to read credentials: $e');
+      return null;
+    }
+  }
+
   Future<void> logout() async {
     final jar = await _cookieJarFuture;
     await jar.deleteAll();
+    await _secureStorage.delete(key: _loginKey);
+    await _secureStorage.delete(key: _passwordKey);
     debugPrint('[AUTH] Cookies cleared');
   }
 

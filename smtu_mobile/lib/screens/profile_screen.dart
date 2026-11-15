@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'isu_profile_webview.dart';
 
 import 'package:flutter/material.dart';
 
 import '../models/student_profile.dart';
 import '../services/auth_service.dart';
+import '../services/connectivity_service.dart';
 
 class ProfileScreen extends StatefulWidget {
   final AuthService authService;
@@ -20,13 +23,55 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
+  final ConnectivityService _connectivity = ConnectivityService.instance;
+
   late Future<StudentProfile> _profileFuture;
   bool _showSensitive = false;
+  bool _isOnline = true;
+  StreamSubscription<bool>? _connectivitySub;
 
   @override
   void initState() {
     super.initState();
     _profileFuture = widget.authService.getProfile();
+    _connectivitySub = _connectivity.onStatusChange.listen(
+      _onConnectivityChanged,
+    );
+    _checkConnectivity();
+  }
+
+  @override
+  void dispose() {
+    _connectivitySub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _checkConnectivity() async {
+    final online = await _connectivity.checkConnection();
+
+    if (!mounted || online == _isOnline) return;
+
+    setState(() => _isOnline = online);
+
+    if (online) _reload();
+  }
+
+  void _onConnectivityChanged(bool online) {
+    if (!mounted || online == _isOnline) return;
+
+    setState(() => _isOnline = online);
+
+    if (online) _reload();
+  }
+
+  Future<void> _retryConnection() async {
+    final online = await _connectivity.checkConnection();
+
+    if (!mounted) return;
+
+    setState(() => _isOnline = online);
+
+    if (online) _reload();
   }
 
   Future<void> _openFullProfile() async {
@@ -102,127 +147,165 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         ],
       ),
-      body: FutureBuilder<StudentProfile>(
-        future: _profileFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
+      body: !_isOnline
+          ? _buildOfflineView()
+          : FutureBuilder<StudentProfile>(
+              future: _profileFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
 
-          if (snapshot.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.cloud_off, size: 48),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Не удалось загрузить профиль',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.cloud_off, size: 48),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Не удалось загрузить профиль',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '${snapshot.error}',
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 16),
+                          FilledButton.icon(
+                            onPressed: _reload,
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('Повторить'),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    Text('${snapshot.error}', textAlign: TextAlign.center),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      onPressed: _reload,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Повторить'),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
+                  );
+                }
 
-          final profile = snapshot.data!;
+                final profile = snapshot.data!;
 
-          return RefreshIndicator(
-            onRefresh: () async => _reload(),
-            child: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                _buildProfileHeader(profile, theme),
-                const SizedBox(height: 20),
+                return RefreshIndicator(
+                  onRefresh: () async => _reload(),
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      _buildProfileHeader(profile, theme),
+                      const SizedBox(height: 20),
 
-                Card(
-                  child: SwitchListTile(
-                    secondary: const Icon(Icons.security),
-                    title: const Text('Чувствительные данные'),
-                    subtitle: Text(
-                      _showSensitive
-                          ? 'Отображение включено'
-                          : 'Содержимое разделов скрыто',
-                    ),
-                    value: _showSensitive,
-                    onChanged: (value) {
-                      setState(() {
-                        _showSensitive = value;
-                      });
-                    },
-                  ),
-                ),
-
-                const SizedBox(height: 12),
-
-                ...profile.sections.map((section) => _buildSection(section)),
-
-                const SizedBox(height: 24),
-
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    final confirmed = await showDialog<bool>(
-                      context: context,
-                      builder: (dialogContext) {
-                        return AlertDialog(
-                          title: const Text('Выход из ИСУ'),
-                          content: const Text(
-                            'Вы действительно хотите выйти '
-                            'из личного кабинета?',
+                      Card(
+                        child: SwitchListTile(
+                          secondary: const Icon(Icons.security),
+                          title: const Text('Чувствительные данные'),
+                          subtitle: Text(
+                            _showSensitive
+                                ? 'Отображение включено'
+                                : 'Содержимое разделов скрыто',
                           ),
-                          actions: [
-                            TextButton(
-                              onPressed: () {
-                                Navigator.pop(dialogContext, false);
-                              },
-                              child: const Text('Отмена'),
-                            ),
-                            FilledButton(
-                              onPressed: () {
-                                Navigator.pop(dialogContext, true);
-                              },
-                              child: const Text('Выйти'),
-                            ),
-                          ],
-                        );
-                      },
-                    );
+                          value: _showSensitive,
+                          onChanged: (value) {
+                            setState(() {
+                              _showSensitive = value;
+                            });
+                          },
+                        ),
+                      ),
 
-                    if (confirmed == true && mounted) {
-                      await IsuProfileWebViewScreen.clearWebViewCookies();
-                      await widget.onLogout();
-                      if (mounted) {
-                        Navigator.pop(context);
-                      }
-                    }
-                  },
-                  icon: const Icon(Icons.logout),
-                  label: const Text('Выйти из ИСУ'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: theme.colorScheme.error,
-                    padding: const EdgeInsets.all(14),
+                      const SizedBox(height: 12),
+
+                      ...profile.sections.map(
+                        (section) => _buildSection(section),
+                      ),
+
+                      const SizedBox(height: 24),
+
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          final confirmed = await showDialog<bool>(
+                            context: context,
+                            builder: (dialogContext) {
+                              return AlertDialog(
+                                title: const Text('Выход из ИСУ'),
+                                content: const Text(
+                                  'Вы действительно хотите выйти '
+                                  'из личного кабинета?',
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () {
+                                      Navigator.pop(dialogContext, false);
+                                    },
+                                    child: const Text('Отмена'),
+                                  ),
+                                  FilledButton(
+                                    onPressed: () {
+                                      Navigator.pop(dialogContext, true);
+                                    },
+                                    child: const Text('Выйти'),
+                                  ),
+                                ],
+                              );
+                            },
+                          );
+
+                          if (confirmed == true && mounted) {
+                            await IsuProfileWebViewScreen.clearWebViewCookies();
+                            await widget.onLogout();
+                            if (mounted) {
+                              Navigator.pop(context);
+                            }
+                          }
+                        },
+                        icon: const Icon(Icons.logout),
+                        label: const Text('Выйти из ИСУ'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: theme.colorScheme.error,
+                          padding: const EdgeInsets.all(14),
+                        ),
+                      ),
+
+                      const SizedBox(height: 24),
+                    ],
                   ),
-                ),
-
-                const SizedBox(height: 24),
-              ],
+                );
+              },
             ),
-          );
-        },
+    );
+  }
+
+  Widget _buildOfflineView() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.cloud_off, size: 48),
+            const SizedBox(height: 12),
+            const Text(
+              'Нет подключения к интернету',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Профиль загрузится, когда появится соединение.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _retryConnection,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Повторить'),
+            ),
+          ],
+        ),
       ),
     );
   }

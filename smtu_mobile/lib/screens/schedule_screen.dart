@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'notification_settings_screen.dart';
+import '../services/connectivity_service.dart';
 import '../services/notification_service.dart';
+import '../services/schedule_cache.dart';
 import 'room_map_screen.dart';
 import 'profile_screen.dart';
 import '../services/auth_service.dart';
@@ -26,28 +30,138 @@ class ScheduleScreen extends StatefulWidget {
 
 class _ScheduleScreenState extends State<ScheduleScreen> {
   final SmtuApi _api = SmtuApi();
+  final ScheduleCache _cache = ScheduleCache();
+  final ConnectivityService _connectivity = ConnectivityService.instance;
 
   List<GroupRef> _groups = [];
   GroupRef? _selectedGroup;
   GroupSchedule? _schedule;
-  late final Future<void> _groupsFuture;
   final NotificationService _notificationService = NotificationService.instance;
   bool _loadingGroups = true;
   bool _loadingSchedule = false;
   bool _isAuthenticated = false;
   bool _checkingSession = true;
   bool _loadingStudentGroup = false;
+  bool _isOnline = true;
   String? _error;
   String _weekFilter = 'all';
   bool _showAllDays = false;
   int _selectedDayIndex = 0;
+  StreamSubscription<bool>? _connectivitySub;
 
   @override
   void initState() {
     super.initState();
 
-    _groupsFuture = _loadGroups();
-    _restoreSession();
+    _connectivitySub = _connectivity.onStatusChange.listen(
+      _onConnectivityChanged,
+    );
+    _bootstrap();
+  }
+
+  @override
+  void dispose() {
+    _connectivitySub?.cancel();
+    super.dispose();
+  }
+
+  /// Открываем приложение: сначала показываем сохранённые данные, затем
+  /// проверяем сеть и, если она есть, загружаем свежие.
+  Future<void> _bootstrap() async {
+    await _loadCachedData();
+
+    final online = await _connectivity.checkConnection();
+
+    if (!mounted) return;
+
+    setState(() {
+      _isOnline = online;
+      _loadingGroups = false;
+      if (!online) _checkingSession = false;
+    });
+
+    if (!online) return;
+
+    await _loadGroups();
+    await _restoreSession();
+  }
+
+  // Показываем сохранённое расписание группы студента (если есть).
+  Future<void> _loadCachedData() async {
+    final group = await _cache.loadGroup();
+    final schedule = group == null
+        ? null
+        : await _cache.loadSchedule(group.pageId);
+
+    if (!mounted || schedule == null) return;
+
+    setState(() {
+      _selectedGroup = group;
+      _schedule = schedule;
+      _weekFilter = _preferredWeek(schedule);
+    });
+  }
+
+  String _preferredWeek(GroupSchedule schedule) {
+    final displayWeek = schedule.displayWeek;
+
+    if (displayWeek == WeekType.up) return 'up';
+    if (displayWeek == WeekType.down) return 'down';
+
+    return 'all';
+  }
+
+  Future<void> _onConnectivityChanged(bool online) async {
+    if (online == _isOnline) return;
+
+    setState(() {
+      _isOnline = online;
+      if (!online) _checkingSession = false;
+    });
+
+    if (!online) {
+      if (_schedule == null) await _loadCachedData();
+      return;
+    }
+
+    // Сеть появилась — возвращаемся в онлайн-режим и восстанавливаем вход.
+    await _goOnline();
+  }
+
+  Future<void> _goOnline() async {
+    await _loadGroups();
+
+    final authenticated = await widget.authService.restoreSession();
+
+    if (!mounted) return;
+
+    setState(() {
+      _isAuthenticated = authenticated;
+      _checkingSession = false;
+    });
+
+    if (authenticated) {
+      await _loadStudentGroup();
+    } else if (_selectedGroup != null) {
+      await _loadSchedule(_selectedGroup!);
+    }
+  }
+
+  Future<void> _retryConnection() async {
+    final online = await _connectivity.checkConnection();
+
+    if (!mounted) return;
+
+    if (!online) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Нет подключения к интернету')),
+      );
+      return;
+    }
+
+    setState(() => _isOnline = true);
+
+    await _goOnline();
   }
 
   void _openRoomMap(String room) {
@@ -63,9 +177,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   }
 
   Future<void> _restoreSession() async {
-    final authenticated = await widget.authService.checkSession();
-
-    await _groupsFuture;
+    final authenticated = await widget.authService.restoreSession();
 
     if (!mounted) return;
 
@@ -76,6 +188,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
 
     if (authenticated) {
       await _loadStudentGroup();
+    } else if (_selectedGroup != null) {
+      await _loadSchedule(_selectedGroup!);
     }
   }
 
@@ -240,6 +354,14 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
 
         if (matchedGroup != null) {
           await _loadSchedule(matchedGroup);
+
+          // Кэшируем только расписание группы самого студента.
+          final schedule = _schedule;
+
+          if (schedule != null && schedule.pageId == matchedGroup.pageId) {
+            await _cache.saveGroup(matchedGroup);
+            await _cache.saveSchedule(schedule);
+          }
         } else {
           debugPrint(
             '[SCHEDULE] Group $studentGroup not found in public groups',
@@ -281,6 +403,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   Future<void> _logout() async {
     await widget.authService.logout();
 
+    // Сохранённое расписание принадлежит студенту — при выходе удаляем его.
+    await _cache.clear();
+
     if (!mounted) return;
 
     setState(() {
@@ -310,12 +435,23 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       setState(() {
         _groups = groups;
         _loadingGroups = false;
+        _isOnline = true;
       });
     } catch (e) {
       if (!mounted) return;
 
+      // Если расписание уже есть (например, из кэша) — остаёмся на нём.
+      if (_schedule != null) {
+        setState(() {
+          _loadingGroups = false;
+          _isOnline = false;
+        });
+        return;
+      }
+
       setState(() {
         _loadingGroups = false;
+        _isOnline = false;
         _error = 'Не удалось загрузить список групп: $e';
       });
     }
@@ -325,12 +461,25 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   Future<void> _loadSchedule(GroupRef group) async {
     setState(() {
       _selectedGroup = group;
-      _schedule = null;
       _loadingSchedule = true;
       _error = null;
       _selectedDayIndex = 0;
-      _weekFilter = 'all';
     });
+
+    if (!_isOnline) {
+      final cached = await _cache.loadSchedule(group.pageId);
+
+      if (!mounted) return;
+
+      setState(() {
+        _schedule = cached;
+        _loadingSchedule = false;
+        _weekFilter = cached == null ? 'all' : _preferredWeek(cached);
+        _error = cached == null ? 'Нет подключения к интернету' : null;
+      });
+
+      return;
+    }
 
     try {
       final schedule = await _api.fetchSchedule(group.pageId);
@@ -340,20 +489,25 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       setState(() {
         _schedule = schedule;
         _loadingSchedule = false;
-
-        // По умолчанию показываем неделю, к которой относятся ближайшие
-        // учебные дни: с воскресенья это уже следующая неделя.
-        final displayWeek = schedule.displayWeek;
-
-        if (displayWeek == WeekType.up) {
-          _weekFilter = 'up';
-        } else if (displayWeek == WeekType.down) {
-          _weekFilter = 'down';
-        }
+        _weekFilter = _preferredWeek(schedule);
       });
+
       await _notificationService.syncSchedule(schedule);
     } catch (e) {
+      final cached = await _cache.loadSchedule(group.pageId);
+
       if (!mounted) return;
+
+      if (cached != null) {
+        setState(() {
+          _schedule = cached;
+          _loadingSchedule = false;
+          _weekFilter = _preferredWeek(cached);
+          _isOnline = false;
+          _error = null;
+        });
+        return;
+      }
 
       setState(() {
         _loadingSchedule = false;
@@ -363,6 +517,25 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   }
 
   Future<void> _refresh() async {
+    if (!_isOnline) {
+      final online = await _connectivity.checkConnection();
+
+      if (!mounted) return;
+
+      if (!online) {
+        if (_selectedGroup != null) {
+          await _loadSchedule(_selectedGroup!);
+        } else {
+          await _loadCachedData();
+        }
+        return;
+      }
+
+      setState(() => _isOnline = true);
+      await _goOnline();
+      return;
+    }
+
     if (_selectedGroup != null) {
       await _loadSchedule(_selectedGroup!);
     } else {
@@ -373,6 +546,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   // Окно поиска и выбора группы.
 
   Future<void> _showGroupPicker() async {
+    if (!_isOnline) return;
+
     final selected = await showModalBottomSheet<GroupRef>(
       context: context,
       isScrollControlled: true,
@@ -500,7 +675,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
             ),
         ],
       ),
-      body: _loadingGroups
+      body: !_isOnline && _schedule == null
+          ? _OfflineView(onRetry: _retryConnection)
+          : _loadingGroups
           ? const Center(child: CircularProgressIndicator())
           : _error != null && _selectedGroup == null
           ? _ErrorView(message: _error!, onRetry: _loadGroups)
@@ -510,6 +687,10 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
                 children: [
+                  if (!_isOnline) ...[
+                    _OfflineBanner(onRetry: _retryConnection),
+                    const SizedBox(height: 12),
+                  ],
                   _buildGroupSelector(theme),
                   const SizedBox(height: 16),
 
@@ -562,12 +743,15 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   }
 
   Widget _buildGroupSelector(ThemeData theme) {
+    // В офлайне список групп недоступен, поэтому поиск отключён.
+    final canPickGroup = _isOnline && !_loadingGroups;
+
     return Material(
       color: theme.colorScheme.surfaceContainerHighest,
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: _loadingGroups ? null : _showGroupPicker,
+        onTap: canPickGroup ? _showGroupPicker : null,
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
@@ -590,10 +774,19 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
+                    if (!_isOnline) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Поиск групп недоступен без интернета',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
-              const Icon(Icons.keyboard_arrow_down),
+              Icon(canPickGroup ? Icons.keyboard_arrow_down : Icons.cloud_off),
             ],
           ),
         ),
@@ -1130,6 +1323,69 @@ class _GroupPickerSheetState extends State<_GroupPickerSheet> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OfflineBanner extends StatelessWidget {
+  final VoidCallback onRetry;
+
+  const _OfflineBanner({required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Card(
+      margin: EdgeInsets.zero,
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+        child: Row(
+          children: [
+            Icon(Icons.cloud_off, size: 20, color: theme.colorScheme.primary),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text('Офлайн-режим. Показаны сохранённые данные.'),
+            ),
+            TextButton(onPressed: onRetry, child: const Text('Проверить')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OfflineView extends StatelessWidget {
+  final VoidCallback onRetry;
+
+  const _OfflineView({required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.cloud_off, size: 48),
+            const SizedBox(height: 12),
+            const Text(
+              'Нет подключения к интернету',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Сохранённого расписания пока нет. Подключитесь к сети и повторите.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            FilledButton(onPressed: onRetry, child: const Text('Повторить')),
+          ],
         ),
       ),
     );
