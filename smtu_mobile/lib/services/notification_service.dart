@@ -7,6 +7,7 @@ import 'package:timezone/data/latest_all.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
 
 import '../models/schedule_models.dart';
+import 'schedule_cache.dart';
 import 'system_alarm_service.dart';
 
 class NotificationService {
@@ -71,11 +72,31 @@ class NotificationService {
     return value;
   }
 
+  final ScheduleCache _scheduleCache = ScheduleCache();
+
   GroupSchedule? _lastSchedule;
 
   /// Последнее загруженное расписание: нужно, чтобы создавать будильники
   /// из экрана настроек и при запуске приложения.
   GroupSchedule? get lastSchedule => _lastSchedule;
+
+  /// Расписание для будильников: последнее загруженное, а если его ещё нет
+  /// (например, приложение открыто без интернета) — сохранённое в кэше.
+  Future<GroupSchedule?> resolveSchedule() async {
+    final schedule = _lastSchedule;
+
+    if (schedule != null) return schedule;
+
+    final group = await _scheduleCache.loadGroup();
+
+    if (group == null) return null;
+
+    final cached = await _scheduleCache.loadSchedule(group.pageId);
+
+    _lastSchedule = cached;
+
+    return cached;
+  }
 
   Future<void> initialize() async {
     if (_initialized) return;
@@ -238,18 +259,6 @@ class NotificationService {
     );
   }
 
-  Future<void> resetAlarmTime(int weekday) async {
-    final prefs = await SharedPreferences.getInstance();
-    final overrides = await getAlarmOverrides();
-
-    if (overrides.remove(weekday) == null) return;
-
-    await prefs.setString(
-      _alarmOverridesKey,
-      jsonEncode(overrides.map((key, value) => MapEntry('$key', value))),
-    );
-  }
-
   Future<Set<int>> getDisabledAlarmDays() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_alarmDisabledKey);
@@ -287,12 +296,26 @@ class NotificationService {
     await prefs.setBool(_alarmsEnabledKey, value);
   }
 
-  /// Сбрасывает отметку о созданных будильниках: следующий заход в неделю
-  /// снова создаст их. Нужен при явном выключении автосоздания.
-  Future<void> resetWeeklyAlarmsFlag() async {
+  /// Удаляет созданные будильники из системы и очищает сохранённый план.
+  /// Ручные изменения времени и удалённые дни сбрасываются.
+  Future<void> deleteWeeklyAlarms() async {
+    await SystemAlarmService.instance.cancelAlarms();
+
     final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_alarmsPlanKey);
     await prefs.remove(_alarmsWeekKey);
     await prefs.remove(_legacyAlarmsWeekKey);
+    await prefs.remove(_alarmOverridesKey);
+    await prefs.remove(_alarmDisabledKey);
+
+    await _plugin.cancel(id: _alarmStatusId);
+  }
+
+  /// Удаляет будильник одного дня недели: отменяет его в системе и
+  /// переставляет оставшиеся будильники.
+  Future<void> deleteAlarm(int weekday) async {
+    await setAlarmDisabled(weekday, true);
+    await createWeeklyAlarms(force: true);
   }
 
   /// Будильники на каждый учебный день недели: день, время срабатывания.
@@ -336,8 +359,8 @@ class NotificationService {
     return plan;
   }
 
-  /// Что будет поставлено на ближайшую неделю: день, дата, время и причина,
-  /// если будильника нет (нет пар или время уже прошло).
+  /// Что будет поставлено на ближайшую неделю: день, дата и время.
+  /// Дни без пар, прошедшие и удалённые вручную будильники в список не попадают.
   Future<List<AlarmPlanEntry>> describeAlarms(
     GroupSchedule schedule,
     int minutesBefore,
@@ -367,16 +390,8 @@ class NotificationService {
           .where((lesson) => _parseStartMinutes(lesson.time) != null)
           .toList();
 
-      if (lessons.isEmpty) {
-        entries.add(
-          AlarmPlanEntry(
-            dayName: day.dayName,
-            weekday: weekday,
-            note: 'нет пар',
-          ),
-        );
-        continue;
-      }
+      // Дни без пар в меню будильников не показываем.
+      if (lessons.isEmpty) continue;
 
       lessons.sort(
         (a, b) =>
@@ -400,27 +415,8 @@ class NotificationService {
         alarmMinutes % 60,
       );
 
-      if (disabled.contains(weekday)) {
-        entries.add(
-          AlarmPlanEntry(
-            dayName: day.dayName,
-            weekday: weekday,
-            note: 'отключён вручную',
-          ),
-        );
-        continue;
-      }
-
-      if (!trigger.isAfter(now)) {
-        entries.add(
-          AlarmPlanEntry(
-            dayName: day.dayName,
-            weekday: weekday,
-            note: 'время уже прошло',
-          ),
-        );
-        continue;
-      }
+      // Удалённые вручную и уже сработавшие будильники не показываем.
+      if (disabled.contains(weekday) || !trigger.isAfter(now)) continue;
 
       entries.add(
         AlarmPlanEntry(
@@ -464,7 +460,7 @@ class NotificationService {
         return;
       }
 
-      final schedule = _lastSchedule;
+      final schedule = await resolveSchedule();
       final entries = schedule == null
           ? await savedAlarmPlan()
           : await describeAlarms(schedule, await getAlarmMinutesBefore());
@@ -539,18 +535,22 @@ class NotificationService {
 
     try {
       final decoded = jsonDecode(raw) as List<dynamic>;
+      final now = DateTime.now();
 
-      return decoded.map((item) {
-        final map = item as Map<String, dynamic>;
+      return decoded
+          .map((item) {
+            final map = item as Map<String, dynamic>;
 
-        return AlarmPlanEntry(
-          dayName: map['dayName'] as String,
-          weekday: map['weekday'] as int?,
-          triggerAt: DateTime.fromMillisecondsSinceEpoch(
-            map['triggerAtMillis'] as int,
-          ),
-        );
-      }).toList();
+            return AlarmPlanEntry(
+              dayName: map['dayName'] as String,
+              weekday: map['weekday'] as int?,
+              triggerAt: DateTime.fromMillisecondsSinceEpoch(
+                map['triggerAtMillis'] as int,
+              ),
+            );
+          })
+          .where((entry) => entry.triggerAt!.isAfter(now))
+          .toList();
     } catch (_) {
       return const [];
     }
@@ -577,7 +577,7 @@ class NotificationService {
   /// Повторно на ту же неделю не создаёт, если не передан [force].
   Future<({int created, bool alreadyCreated, String? error})>
   createWeeklyAlarms({int? minutesBefore, bool force = false}) async {
-    final schedule = _lastSchedule;
+    final schedule = await resolveSchedule();
 
     if (schedule == null) {
       return (created: 0, alreadyCreated: false, error: null);

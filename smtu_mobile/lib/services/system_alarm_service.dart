@@ -52,6 +52,19 @@ class SystemAlarmService {
     }
   }
 
+  /// Удаляет все будильники, созданные приложением.
+  Future<bool> cancelAlarms() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('cancelAlarms');
+
+      return result ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   Future<bool> setAlarm({
     required int hour,
     required int minute,

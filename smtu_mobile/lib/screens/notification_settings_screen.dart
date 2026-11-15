@@ -53,7 +53,8 @@ class _NotificationSettingsScreenState
     final enabled = await _service.isEnabled();
     final alarmsEnabled = await _service.isAlarmsEnabled();
     final minutes = await _service.getMinutesBefore();
-    final schedule = _service.lastSchedule;
+    // В офлайне берётся сохранённое расписание из кэша.
+    final schedule = await _service.resolveSchedule();
     final alarmMinutes = await _service.getAlarmMinutesBefore();
 
     // Если расписание ещё не загружено, показываем последний сохранённый план.
@@ -113,23 +114,22 @@ class _NotificationSettingsScreenState
   Future<void> _changeAlarmsEnabled(bool value) async {
     if (!value) {
       await _service.setAlarmsEnabled(false);
-      await _service.resetWeeklyAlarmsFlag();
-      await _service.refreshAlarmStatus();
+      await _service.deleteWeeklyAlarms();
 
       if (!mounted) return;
 
       setState(() {
         _alarmsEnabled = false;
+        _plan = const [];
       });
 
       _showMessage(
-        'Автосоздание будильников выключено. Уже созданные будильники '
-        'остаются в приложении «Часы».',
+        'Автосоздание будильников выключено, созданные будильники удалены.',
       );
       return;
     }
 
-    final schedule = _service.lastSchedule;
+    final schedule = await _service.resolveSchedule();
 
     if (schedule == null) {
       _showMessage('Сначала загрузите расписание на экране «Расписание».');
@@ -180,7 +180,7 @@ class _NotificationSettingsScreenState
   }
 
   Future<void> _refreshPlan() async {
-    final schedule = _service.lastSchedule;
+    final schedule = await _service.resolveSchedule();
 
     if (schedule == null) return;
 
@@ -199,10 +199,12 @@ class _NotificationSettingsScreenState
 
     if (weekday == null) return;
 
-    if (_service.lastSchedule == null) {
+    if (await _service.resolveSchedule() == null) {
       _showMessage('Расписание ещё загружается. Попробуйте чуть позже.');
       return;
     }
+
+    if (!mounted) return;
 
     final current = entry.triggerAt;
     final picked = await showTimePicker(
@@ -231,38 +233,17 @@ class _NotificationSettingsScreenState
 
     if (weekday == null) return;
 
-    if (_service.lastSchedule == null) {
+    if (await _service.resolveSchedule() == null) {
       _showMessage('Расписание ещё загружается. Попробуйте чуть позже.');
       return;
     }
 
-    await _service.setAlarmDisabled(weekday, true);
-    await _service.createWeeklyAlarms(force: true);
+    await _service.deleteAlarm(weekday);
     await _refreshPlan();
 
     if (!mounted) return;
 
     _showMessage('Будильник на ${entry.dayName} удалён.');
-  }
-
-  Future<void> _restoreAlarm(AlarmPlanEntry entry) async {
-    final weekday = entry.weekday;
-
-    if (weekday == null) return;
-
-    if (_service.lastSchedule == null) {
-      _showMessage('Расписание ещё загружается. Попробуйте чуть позже.');
-      return;
-    }
-
-    await _service.setAlarmDisabled(weekday, false);
-    await _service.resetAlarmTime(weekday);
-    await _service.createWeeklyAlarms(force: true);
-    await _refreshPlan();
-
-    if (!mounted) return;
-
-    _showMessage('Будильник на ${entry.dayName} возвращён.');
   }
 
   void _showMessage(String text) {
@@ -475,13 +456,7 @@ class _NotificationSettingsScreenState
                                   size: 20,
                                 ),
                               ),
-                            ] else if (entry.note == 'отключён вручную')
-                              IconButton(
-                                tooltip: 'Вернуть будильник',
-                                visualDensity: VisualDensity.compact,
-                                onPressed: () => _restoreAlarm(entry),
-                                icon: const Icon(Icons.restart_alt, size: 20),
-                              ),
+                            ],
                           ],
                         ),
                       ),

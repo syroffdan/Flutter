@@ -31,6 +31,18 @@ class MainActivity : FlutterActivity() {
                         result.success(setAlarm(hour, minute, message, skipUi, weekdays))
                     }
                 }
+                "cancelAlarms" -> {
+                    try {
+                        cancelAlarms()
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error(
+                            "cancel_failed",
+                            "${e.javaClass.simpleName}: ${e.message}",
+                            null,
+                        )
+                    }
+                }
                 "scheduleAlarms" -> {
                     val alarms = call.argument<List<Map<String, Any?>>>("alarms")
                         ?: emptyList()
@@ -51,10 +63,10 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun scheduleAlarms(alarms: List<Map<String, Any?>>) {
+    /// Снимает все будильники приложения.
+    private fun cancelAlarms() {
         val manager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-        // Снимаем предыдущие будильники приложения.
         for (id in 0..15) {
             val pending = PendingIntent.getActivity(
                 this,
@@ -68,6 +80,13 @@ class MainActivity : FlutterActivity() {
                 pending.cancel()
             }
         }
+    }
+
+    private fun scheduleAlarms(alarms: List<Map<String, Any?>>) {
+        // Снимаем предыдущие будильники приложения.
+        cancelAlarms()
+
+        val manager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
         for ((index, alarm) in alarms.withIndex()) {
             val triggerAt = (alarm["triggerAtMillis"] as? Number)?.toLong()

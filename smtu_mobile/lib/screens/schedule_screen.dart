@@ -80,7 +80,16 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       if (!online) _checkingSession = false;
     });
 
-    if (!online) return;
+    if (!online) {
+      // В офлайне будильники ставим по сохранённому расписанию.
+      final cached = _schedule;
+
+      if (cached != null) {
+        await _notificationService.syncSchedule(cached);
+      }
+
+      return;
+    }
 
     await _loadGroups();
     await _restoreSession();
@@ -477,6 +486,10 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         _weekFilter = cached == null ? 'all' : _preferredWeek(cached);
         _error = cached == null ? 'Нет подключения к интернету' : null;
       });
+
+      if (cached != null) {
+        await _notificationService.syncSchedule(cached);
+      }
 
       return;
     }
