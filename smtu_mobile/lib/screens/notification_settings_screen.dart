@@ -105,14 +105,29 @@ class _NotificationSettingsScreenState
     });
   }
 
-  Future<void> _changeMinutes(double value) async {
+  /// Пока ползунок двигают, обновляем только подпись.
+  void _previewMinutes(double value) {
     final minutes = value.round();
+
+    if (minutes == _minutesBefore) return;
 
     setState(() {
       _minutesBefore = minutes;
     });
+  }
 
-    await _service.setMinutesBefore(minutes);
+  /// Когда ползунок отпустили, сохраняем время и сразу пересоздаём
+  /// запланированные напоминания.
+  Future<void> _applyMinutes(double value) async {
+    final minutes = value.round();
+
+    if (minutes != _minutesBefore) {
+      setState(() {
+        _minutesBefore = minutes;
+      });
+    }
+
+    await _service.applyMinutesBefore(minutes);
   }
 
   Future<void> _changeAlarmsEnabled(bool value) async {
@@ -625,7 +640,8 @@ class _NotificationSettingsScreenState
                     max: 180,
                     divisions: 36,
                     label: '$_minutesBefore мин.',
-                    onChanged: _enabled ? _changeMinutes : null,
+                    onChanged: _enabled ? _previewMinutes : null,
+                    onChangeEnd: _enabled ? _applyMinutes : null,
                   ),
 
                   Row(

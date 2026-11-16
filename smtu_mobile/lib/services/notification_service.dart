@@ -203,6 +203,19 @@ class NotificationService {
     await prefs.setInt(_minutesKey, value);
   }
 
+  /// Сохраняет новое время напоминаний и сразу пересоздаёт уже
+  /// запланированные напоминания о парах, не дожидаясь возврата
+  /// на экран расписания.
+  Future<void> applyMinutesBefore(int value) async {
+    await setMinutesBefore(value);
+
+    final schedule = await resolveSchedule();
+
+    if (schedule == null) return;
+
+    await syncSchedule(schedule);
+  }
+
   /// Время начала пары в минутах от полуночи или null, если распознать
   /// не удалось.
   int? lessonStartMinutes(String time) => _parseStartMinutes(time);
