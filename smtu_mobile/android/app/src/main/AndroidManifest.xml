@@ -9,6 +9,15 @@
     <!-- Точные будильники приложения (аналог будильника «Часов»). -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Постоянное уведомление о ближайшем будильнике живёт в
+         foreground-сервисе, поэтому не пропадает после свайпа приложения. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <!-- Запрос исключения из оптимизации батареи при включении будильников. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <!-- Экран будильника поверх блокировки через full-screen intent. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
     <application
         android:label="ISU mobile"
         android:name="${applicationName}"
@@ -43,6 +52,34 @@
             android:showWhenLocked="true"
             android:turnScreenOn="true"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+
+        <service
+            android:name=".AlarmStatusService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="alarm_schedule_status_notification" />
+        </service>
+
+        <!-- Срабатывание будильника: full-screen уведомление и экран сигнала. -->
+        <receiver
+            android:exported="false"
+            android:name=".AlarmReceiver" />
+
+        <!-- Android очищает AlarmManager при выключении: восстанавливаем
+             будильники из сохранённого плана после загрузки. -->
+        <receiver
+            android:exported="true"
+            android:name=".BootReceiver">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:exported="false"

@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -17,6 +19,12 @@ class NotificationService {
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
+
+  /// Сервис на Android, который держит постоянное уведомление в шторке
+  /// и не останавливается при удалении приложения из недавних.
+  static const MethodChannel _statusChannel = MethodChannel(
+    'smtu/alarm_status',
+  );
 
   static const String _enabledKey = 'lesson_notifications_enabled';
   static const String _minutesKey = 'lesson_notifications_minutes';
@@ -124,6 +132,21 @@ class NotificationService {
       onDidReceiveNotificationResponse: _onNotificationResponse,
     );
 
+    _statusChannel.setMethodCallHandler(_onStatusChannelCall);
+
+    // Нажатие на постоянное уведомление при закрытом приложении.
+    try {
+      final openAlarms = await _statusChannel.invokeMethod<bool>(
+        'consumeOpenAlarms',
+      );
+
+      if (openAlarms == true) _openAlarmsOnLaunch = true;
+    } on MissingPluginException {
+      // Сборка без нативного сервиса.
+    } on PlatformException {
+      // Не критично для запуска приложения.
+    }
+
     final launchDetails = await _plugin.getNotificationAppLaunchDetails();
 
     if ((launchDetails?.didNotificationLaunchApp ?? false) &&
@@ -136,6 +159,13 @@ class NotificationService {
 
   void _onNotificationResponse(NotificationResponse response) {
     if (response.payload != _alarmStatusPayload) return;
+
+    _openAlarmsOnLaunch = true;
+    onOpenAlarmsRequested?.call();
+  }
+
+  Future<void> _onStatusChannelCall(MethodCall call) async {
+    if (call.method != 'openAlarms') return;
 
     _openAlarmsOnLaunch = true;
     onOpenAlarmsRequested?.call();
@@ -296,6 +326,23 @@ class NotificationService {
     await prefs.setBool(_alarmsEnabledKey, value);
   }
 
+  /// Просит разрешить приложению работу в фоне: без этого система может
+  /// останавливать сервис уведомления и откладывать будильники.
+  Future<bool> requestBackgroundPermission() {
+    return SystemAlarmService.instance.requestBackgroundPermission();
+  }
+
+  /// Выдано ли разрешение на точные будильники (Android 12+).
+  Future<bool> canScheduleExactAlarms() {
+    return SystemAlarmService.instance.canScheduleExactAlarms();
+  }
+
+  /// Открывает настройки «Будильники и напоминания», если разрешения нет.
+  /// Возвращает true, когда разрешение уже выдано.
+  Future<bool> requestExactAlarmPermission() {
+    return SystemAlarmService.instance.requestExactAlarmPermission();
+  }
+
   /// Удаляет созданные будильники из системы и очищает сохранённый план.
   /// Ручные изменения времени и удалённые дни сбрасываются.
   Future<void> deleteWeeklyAlarms() async {
@@ -308,7 +355,7 @@ class NotificationService {
     await prefs.remove(_alarmOverridesKey);
     await prefs.remove(_alarmDisabledKey);
 
-    await _plugin.cancel(id: _alarmStatusId);
+    await _hideAlarmStatus();
   }
 
   /// Удаляет будильник одного дня недели: отменяет его в системе и
@@ -456,7 +503,7 @@ class NotificationService {
       await initialize();
 
       if (!await isAlarmsEnabled()) {
-        await _plugin.cancel(id: _alarmStatusId);
+        await _hideAlarmStatus();
         return;
       }
 
@@ -468,44 +515,93 @@ class NotificationService {
       final nearest = nearestAlarm(entries);
 
       if (nearest == null) {
-        await _plugin.cancel(id: _alarmStatusId);
+        await _hideAlarmStatus();
         return;
       }
 
       final trigger = nearest.triggerAt!;
       final time = _formatMinutes(trigger.hour * 60 + trigger.minute);
 
-      await _plugin.show(
-        id: _alarmStatusId,
+      await _showAlarmStatusNotification(
         title: 'Будильник в $time',
         body:
             'Ближайший: ${_dayLabel(trigger)}. Нажмите, чтобы открыть список.',
-        payload: _alarmStatusPayload,
-        notificationDetails: NotificationDetails(
-          android: AndroidNotificationDetails(
-            _alarmStatusChannelId,
-            'Ближайший будильник',
-            channelDescription:
-                'Постоянное уведомление о ближайшем автоматическом будильнике',
-            importance: Importance.defaultImportance,
-            priority: Priority.defaultPriority,
-            playSound: false,
-            enableVibration: false,
-            onlyAlertOnce: true,
-            ongoing: true,
-            autoCancel: false,
-            showWhen: true,
-            when: trigger.millisecondsSinceEpoch,
-            // Содержимое видно и на экране блокировки.
-            visibility: NotificationVisibility.public,
-            category: AndroidNotificationCategory.alarm,
-            channelShowBadge: false,
-          ),
-        ),
+        trigger: trigger,
       );
     } catch (_) {
       // Уведомление о будильнике не критично для работы приложения.
     }
+  }
+
+  /// Показывает постоянное уведомление о будильнике. На Android его
+  /// показывает foreground-сервис: уведомление остаётся в шторке, даже
+  /// если приложение убрали свайпом из недавних.
+  Future<void> _showAlarmStatusNotification({
+    required String title,
+    required String body,
+    required DateTime trigger,
+  }) async {
+    if (Platform.isAndroid) {
+      try {
+        final shown = await _statusChannel.invokeMethod<bool>(
+          'showAlarmStatus',
+          {
+            'title': title,
+            'body': body,
+            'when': trigger.millisecondsSinceEpoch,
+          },
+        );
+
+        if (shown == true) return;
+      } on MissingPluginException {
+        // Сборка без нативного сервиса: показываем обычное уведомление.
+      } on PlatformException {
+        // То же самое.
+      }
+    }
+
+    await _plugin.show(
+      id: _alarmStatusId,
+      title: title,
+      body: body,
+      payload: _alarmStatusPayload,
+      notificationDetails: NotificationDetails(
+        android: AndroidNotificationDetails(
+          _alarmStatusChannelId,
+          'Ближайший будильник',
+          channelDescription:
+              'Постоянное уведомление о ближайшем автоматическом будильнике',
+          importance: Importance.defaultImportance,
+          priority: Priority.defaultPriority,
+          playSound: false,
+          enableVibration: false,
+          onlyAlertOnce: true,
+          ongoing: true,
+          autoCancel: false,
+          showWhen: true,
+          when: trigger.millisecondsSinceEpoch,
+          // Содержимое видно и на экране блокировки.
+          visibility: NotificationVisibility.public,
+          category: AndroidNotificationCategory.alarm,
+          channelShowBadge: false,
+        ),
+      ),
+    );
+  }
+
+  /// Скрывает постоянное уведомление о будильнике вместе с сервисом.
+  Future<void> _hideAlarmStatus() async {
+    if (Platform.isAndroid) {
+      try {
+        await _statusChannel.invokeMethod<bool>('hideAlarmStatus');
+      } on MissingPluginException {
+        // Сборка без нативного сервиса.
+      } on PlatformException {
+        // Не критично.
+      }
+    }
+
+    await _plugin.cancel(id: _alarmStatusId);
   }
 
   String _dayLabel(DateTime date) {
@@ -594,6 +690,17 @@ class NotificationService {
 
     if (!force && prefs.getString(_alarmsWeekKey) == signature) {
       return (created: 0, alreadyCreated: true, error: null);
+    }
+
+    // Без разрешения на точные будильники Android отклонит setAlarmClock,
+    // поэтому сначала просим его и сообщаем об этом пользователю.
+    if (Platform.isAndroid &&
+        !await SystemAlarmService.instance.canScheduleExactAlarms()) {
+      return (
+        created: 0,
+        alreadyCreated: false,
+        error: 'нет разрешения «Будильники и напоминания»',
+      );
     }
 
     final described = await describeAlarms(schedule, minutes);
@@ -727,7 +834,15 @@ class NotificationService {
       await createWeeklyAlarms();
     }
 
-    await _plugin.cancelAll();
+    // Снимаем только напоминания о парах: постоянное уведомление о
+    // будильнике показывает foreground-сервис, его сбрасывать нельзя.
+    for (
+      var weekday = DateTime.monday;
+      weekday <= DateTime.sunday;
+      weekday++
+    ) {
+      await _plugin.cancel(id: _notificationIdBase + weekday);
+    }
 
     // Постоянное уведомление о ближайшем будильнике не зависит от
     // напоминаний о парах.

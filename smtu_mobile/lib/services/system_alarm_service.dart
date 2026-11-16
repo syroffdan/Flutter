@@ -52,6 +52,53 @@ class SystemAlarmService {
     }
   }
 
+  /// Можно ли ставить точные будильники (Android 12+). На старых версиях
+  /// и платформах без плагина разрешение не требуется.
+  Future<bool> canScheduleExactAlarms() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('canScheduleExactAlarms');
+
+      return result ?? true;
+    } on PlatformException {
+      return true;
+    } on MissingPluginException {
+      return true;
+    }
+  }
+
+  /// Открывает настройки «Будильники и напоминания». Возвращает true,
+  /// если разрешение уже выдано и переходить никуда не нужно.
+  Future<bool> requestExactAlarmPermission() async {
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'requestExactAlarmPermission',
+      );
+
+      return result ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  /// Открывает системные настройки, где приложению разрешают работу
+  /// в фоне (исключение из оптимизации батареи). Возвращает true, если
+  /// разрешение уже выдано и показывать настройки не понадобилось.
+  Future<bool> requestBackgroundPermission() async {
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'requestBackgroundPermission',
+      );
+
+      return result ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   /// Удаляет все будильники, созданные приложением.
   Future<bool> cancelAlarms() async {
     try {

@@ -36,7 +36,13 @@ class AlarmActivity : Activity() {
             )
         }
 
-        val message = intent.getStringExtra("message") ?: "Пора на пару"
+        // Экран мог открыться из full-screen уведомления — убираем его,
+        // чтобы не оставалось второй копии будильника в шторке.
+        AlarmReceiver.cancel(this)
+
+        val message = intent.getStringExtra(AlarmScheduler.EXTRA_MESSAGE)
+            ?: intent.getStringExtra("message")
+            ?: "Пора на пару"
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -123,6 +129,8 @@ class AlarmActivity : Activity() {
     }
 
     private fun stopAlarm() {
+        AlarmReceiver.cancel(this)
+
         try {
             player?.stop()
             player?.release()

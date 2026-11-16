@@ -151,8 +151,40 @@ class _NotificationSettingsScreenState
 
     if (minutes == null || !mounted) return;
 
+    // Уведомление о ближайшем будильнике и экран сигнала — это уведомления,
+    // без разрешения их не будет, даже если напоминания о парах не включали.
+    final notificationsGranted = await _service.requestPermission();
+
+    if (!mounted) return;
+
+    if (!notificationsGranted) {
+      _showMessage(
+        'Разрешите уведомления в настройках Android: без них не появятся '
+        'ни уведомление о будильнике, ни экран сигнала.',
+      );
+      return;
+    }
+
+    final exactGranted = await _service.requestExactAlarmPermission();
+
+    if (!mounted) return;
+
+    if (!exactGranted) {
+      _showMessage(
+        'Разрешите «Будильники и напоминания» в настройках Android, '
+        'затем включите автосоздание снова.',
+      );
+      return;
+    }
+
     await _service.setAlarmMinutesBefore(minutes);
     await _service.setAlarmsEnabled(true);
+
+    // Просим разрешить работу в фоне: иначе система может останавливать
+    // сервис уведомления и не давать будильникам срабатывать вовремя.
+    await _service.requestBackgroundPermission();
+
+    if (!mounted) return;
 
     setState(() {
       _alarmsEnabled = true;

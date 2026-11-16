@@ -1,17 +1,66 @@
 package com.example.smtu_mobile
 
-import android.app.AlarmManager
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
 import android.provider.AlarmClock
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var statusChannel: MethodChannel? = null
+
+    /// Нажатие на уведомление о будильнике ещё не передано во Flutter:
+    /// при холодном старте забирается методом `consumeOpenAlarms`.
+    private var pendingOpenAlarms = false
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        pendingOpenAlarms = intent?.getBooleanExtra(
+            AlarmStatusService.EXTRA_OPEN_ALARMS,
+            false,
+        ) == true
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "smtu/alarm_status",
+        ).also { channel ->
+            statusChannel = channel
+
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "showAlarmStatus" -> {
+                        val title = call.argument<String>("title") ?: "Будильник"
+                        val body = call.argument<String>("body") ?: ""
+                        val whenMillis = (call.argument<Number>("when"))?.toLong() ?: 0L
+
+                        try {
+                            AlarmStatusService.start(this, title, body, whenMillis)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            // Сервис запустить нельзя: Flutter покажет
+                            // обычное уведомление.
+                            result.success(false)
+                        }
+                    }
+                    "hideAlarmStatus" -> {
+                        AlarmStatusService.stop(this)
+                        result.success(true)
+                    }
+                    "consumeOpenAlarms" -> {
+                        val value = pendingOpenAlarms
+                        pendingOpenAlarms = false
+                        result.success(value)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -31,6 +80,15 @@ class MainActivity : FlutterActivity() {
                         result.success(setAlarm(hour, minute, message, skipUi, weekdays))
                     }
                 }
+                "requestBackgroundPermission" -> {
+                    result.success(requestBackgroundPermission())
+                }
+                "canScheduleExactAlarms" -> {
+                    result.success(AlarmScheduler.canScheduleExact(this))
+                }
+                "requestExactAlarmPermission" -> {
+                    result.success(requestExactAlarmPermission())
+                }
                 "cancelAlarms" -> {
                     try {
                         cancelAlarms()
@@ -48,8 +106,7 @@ class MainActivity : FlutterActivity() {
                         ?: emptyList()
 
                     try {
-                        scheduleAlarms(alarms)
-                        result.success(true)
+                        result.success(scheduleAlarms(alarms))
                     } catch (e: Exception) {
                         result.error(
                             "schedule_failed",
@@ -63,70 +120,106 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /// Снимает все будильники приложения.
-    private fun cancelAlarms() {
-        val manager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
 
-        for (id in 0..15) {
-            val pending = PendingIntent.getActivity(
-                this,
-                id,
-                Intent(this, AlarmActivity::class.java),
-                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
-            )
+        setIntent(intent)
 
-            if (pending != null) {
-                manager.cancel(pending)
-                pending.cancel()
-            }
+        if (intent.getBooleanExtra(AlarmStatusService.EXTRA_OPEN_ALARMS, false)) {
+            pendingOpenAlarms = true
+
+            // Если Flutter уже запущен, открываем будильники сразу.
+            statusChannel?.invokeMethod("openAlarms", null)
         }
     }
 
-    private fun scheduleAlarms(alarms: List<Map<String, Any?>>) {
-        // Снимаем предыдущие будильники приложения.
-        cancelAlarms()
+    /// Открывает настройки «Будильники и напоминания». Возвращает true,
+    /// если разрешение на точные будильники уже выдано.
+    private fun requestExactAlarmPermission(): Boolean {
+        if (AlarmScheduler.canScheduleExact(this)) return true
 
-        val manager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-        for ((index, alarm) in alarms.withIndex()) {
-            val triggerAt = (alarm["triggerAtMillis"] as? Number)?.toLong()
-                ?: continue
-            val message = alarm["message"] as? String ?: "Пора на пару"
-            val id = (alarm["id"] as? Number)?.toInt() ?: index
-
-            val pending = PendingIntent.getActivity(
-                this,
-                id,
-                alarmIntent(message),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
-                manager.setAlarmClock(
-                    AlarmManager.AlarmClockInfo(triggerAt, pending),
-                    pending,
+                startActivity(
+                    Intent(
+                        Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                        Uri.parse("package:$packageName"),
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
-            } catch (e: SecurityException) {
-                // Если точные будильники запрещены, ставим неточный —
-                // он может сработать с небольшой задержкой.
-                manager.setAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    triggerAt,
-                    pending,
-                )
+                return false
+            } catch (_: Exception) {
+                // На части прошивок такого экрана нет.
             }
         }
+
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName"),
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        } catch (_: Exception) {
+            return false
+        }
+
+        return false
     }
 
-    private fun alarmIntent(message: String): Intent {
-        return Intent(this, AlarmActivity::class.java).apply {
-            putExtra("message", message)
-            addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS,
+    /// Открывает системный запрос на работу в фоне (исключение из
+    /// оптимизации батареи). Возвращает true, если разрешение уже выдано.
+    private fun requestBackgroundPermission(): Boolean {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+
+        if (powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            return true
+        }
+
+        // Сначала сам запрос исключения, если производитель его поддерживает.
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName"),
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            return false
+        } catch (_: Exception) {
+            // Некоторые прошивки не умеют показывать запрос напрямую.
+        }
+
+        // Иначе открываем общий список приложений с исключениями.
+        try {
+            startActivity(
+                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        } catch (_: Exception) {
+            return false
+        }
+
+        return false
+    }
+
+    /// Снимает все будильники приложения и забывает сохранённый план.
+    private fun cancelAlarms() {
+        AlarmScheduler.cancelAll(this)
+        AlarmScheduler.save(this, emptyList())
+    }
+
+    private fun scheduleAlarms(alarms: List<Map<String, Any?>>): Boolean {
+        val parsed = alarms.mapIndexedNotNull { index, alarm ->
+            val triggerAt = (alarm["triggerAtMillis"] as? Number)?.toLong()
+                ?: return@mapIndexedNotNull null
+
+            AlarmScheduler.Alarm(
+                id = (alarm["id"] as? Number)?.toInt() ?: index,
+                triggerAtMillis = triggerAt,
+                message = alarm["message"] as? String ?: "Пора на пару",
             )
         }
+
+        return AlarmScheduler.schedule(this, parsed)
     }
 
     private fun setAlarm(
