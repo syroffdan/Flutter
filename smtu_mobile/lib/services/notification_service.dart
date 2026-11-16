@@ -332,6 +332,12 @@ class NotificationService {
     return SystemAlarmService.instance.requestBackgroundPermission();
   }
 
+  /// Открывает настройки приложения: там на части устройств включаются
+  /// автозапуск и показ на экране блокировки.
+  Future<bool> openAppSettings() {
+    return SystemAlarmService.instance.openAppSettings();
+  }
+
   /// Выдано ли разрешение на точные будильники (Android 12+).
   Future<bool> canScheduleExactAlarms() {
     return SystemAlarmService.instance.canScheduleExactAlarms();

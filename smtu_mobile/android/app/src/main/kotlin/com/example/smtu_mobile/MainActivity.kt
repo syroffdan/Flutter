@@ -83,6 +83,9 @@ class MainActivity : FlutterActivity() {
                 "requestBackgroundPermission" -> {
                     result.success(requestBackgroundPermission())
                 }
+                "openAppSettings" -> {
+                    result.success(openAppSettings())
+                }
                 "canScheduleExactAlarms" -> {
                     result.success(AlarmScheduler.canScheduleExact(this))
                 }
@@ -214,6 +217,23 @@ class MainActivity : FlutterActivity() {
         }
 
         return false
+    }
+
+    /// Открывает экран «Приложение → Разрешения»: оттуда пользователь
+    /// включает автозапуск и показ на экране блокировки, если прошивка
+    /// вынесла их в этот раздел.
+    private fun openAppSettings(): Boolean {
+        return try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName"),
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /// Открывает системный запрос на работу в фоне (исключение из

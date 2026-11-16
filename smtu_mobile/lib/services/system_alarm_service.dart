@@ -131,6 +131,20 @@ class SystemAlarmService {
     }
   }
 
+  /// Открывает системный экран настроек приложения, где на части устройств
+  /// включаются автозапуск и показ на экране блокировки.
+  Future<bool> openAppSettings() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('openAppSettings');
+
+      return result ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   /// Удаляет все будильники, созданные приложением.
   Future<bool> cancelAlarms() async {
     try {

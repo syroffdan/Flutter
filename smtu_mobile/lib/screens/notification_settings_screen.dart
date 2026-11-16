@@ -57,8 +57,12 @@ class _NotificationSettingsScreenState
     final schedule = await _service.resolveSchedule();
     final alarmMinutes = await _service.getAlarmMinutesBefore();
 
-    // Если расписание ещё не загружено, показываем последний сохранённый план.
-    final plan = schedule == null
+    // План строится только при включённом автобудильнике: иначе он показывал
+    // бы ещё не созданные будильники как уже запланированные. Если расписание
+    // ещё не загружено, берётся последний сохранённый план.
+    final plan = !alarmsEnabled
+        ? <AlarmPlanEntry>[]
+        : schedule == null
         ? await _service.savedAlarmPlan()
         : await _service.describeAlarms(schedule, alarmMinutes);
 
@@ -224,9 +228,69 @@ class _NotificationSettingsScreenState
             : 'Не удалось создать будильники: $details',
       );
     }
+
+    if (!mounted) return;
+
+    await _showDeviceRestrictionsDialog();
+  }
+
+  /// На части прошивок будильник не срабатывает, пока в настройках
+  /// приложения не включены автозапуск и показ на экране блокировки.
+  Future<void> _showDeviceRestrictionsDialog() async {
+    final openSettings = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Проверьте разрешения'),
+        content: SingleChildScrollView(
+          child: Text(
+            'На некоторых устройствах (Xiaomi, Huawei, Samsung и других) '
+            'будильник может не сработать без дополнительных разрешений.\n\n'
+            'Откройте «Настройки приложения» → «Разрешения» и включите:\n'
+            '• «Автозапуск» — чтобы система не останавливала приложение '
+            'в фоне;\n'
+            '• «Показывать на экране блокировки» или «Полноэкранные '
+            'уведомления» — чтобы экран будильника появлялся поверх '
+            'блокировки.\n\n'
+            'Названия пунктов зависят от прошивки устройства.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Понятно'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Открыть настройки'),
+          ),
+        ],
+      ),
+    );
+
+    if (openSettings != true) return;
+
+    final opened = await _service.openAppSettings();
+
+    if (!mounted) return;
+
+    if (!opened) {
+      _showMessage(
+        'Откройте настройки вручную: «Настройки» → «Приложения» → '
+        '«ISU mobile» → «Разрешения».',
+      );
+    }
   }
 
   Future<void> _refreshPlan() async {
+    if (!await _service.isAlarmsEnabled()) {
+      if (!mounted) return;
+
+      setState(() {
+        _plan = const [];
+      });
+      return;
+    }
+
     final schedule = await _service.resolveSchedule();
 
     if (schedule == null) return;
@@ -450,7 +514,7 @@ class _NotificationSettingsScreenState
             ),
           ),
 
-          if (_plan.isNotEmpty) ...[
+          if (_alarmsEnabled && _plan.isNotEmpty) ...[
             const SizedBox(height: 12),
 
             Card(
