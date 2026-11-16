@@ -45,6 +45,11 @@ class NotificationService {
 
   static const int _notificationIdBase = 5100;
 
+  /// На сколько дней вперёд ставятся напоминания о парах. Android хранит
+  /// запланированные уведомления и после перезагрузки, поэтому двух недель
+  /// хватает, чтобы не открывать приложение каждый день.
+  static const int _reminderDaysAhead = 13;
+
   /// Постоянное уведомление в шторке с ближайшим автоматическим будильником.
   static const int _alarmStatusId = 5000;
   static const String _alarmStatusPayload = 'open_alarms';
@@ -847,6 +852,15 @@ class NotificationService {
     return currentWeek == WeekType.up ? WeekType.down : WeekType.up;
   }
 
+  /// День расписания для дня недели (`DateTime.monday`..`DateTime.sunday`).
+  DaySchedule? _dayForWeekday(List<DaySchedule> days, int weekday) {
+    for (final day in days) {
+      if (_weekdayFromName(day.dayName) == weekday) return day;
+    }
+
+    return null;
+  }
+
   bool _lessonBelongsToWeek(Lesson lesson, WeekType requiredWeek) {
     if (requiredWeek == WeekType.unknown) return true;
 
@@ -867,12 +881,9 @@ class NotificationService {
 
     // Снимаем только напоминания о парах: постоянное уведомление о
     // будильнике показывает foreground-сервис, его сбрасывать нельзя.
-    for (
-      var weekday = DateTime.monday;
-      weekday <= DateTime.sunday;
-      weekday++
-    ) {
-      await _plugin.cancel(id: _notificationIdBase + weekday);
+    // id напоминания — база плюс номер дня от сегодняшнего (0..N).
+    for (var offset = 0; offset <= _reminderDaysAhead; offset++) {
+      await _plugin.cancel(id: _notificationIdBase + offset);
     }
 
     // Постоянное уведомление о ближайшем будильнике не зависит от
@@ -883,22 +894,25 @@ class NotificationService {
 
     final minutesBefore = await getMinutesBefore();
 
+    // Точный будильник доставляется в нужную минуту, в том числе когда
+    // телефон в режиме сна. Неточное планирование (без разрешения на точные
+    // будильники) система может отложить на десятки минут — так напоминание
+    // приходило не всегда и не вовремя.
+    final scheduleMode = await canScheduleExactAlarms()
+        ? AndroidScheduleMode.exactAllowWhileIdle
+        : AndroidScheduleMode.inexactAllowWhileIdle;
+
     final now = tz.TZDateTime.now(tz.local);
     final today = DateTime(now.year, now.month, now.day);
 
-    for (final day in schedule.days) {
-      if (day.lessons.isEmpty) continue;
+    // Ставим напоминания на каждую из ближайших дат, а не только на одно
+    // вхождение дня недели: иначе через неделю напоминания исчезали, если
+    // приложение не открывали.
+    for (var offset = 0; offset <= _reminderDaysAhead; offset++) {
+      final targetDate = today.add(Duration(days: offset));
 
-      final weekday = _weekdayFromName(day.dayName);
-      if (weekday == null) continue;
-
-      // Ищем ближайшую дату соответствующего дня недели.
-      final daysUntil = (weekday - now.weekday + 7) % 7;
-
-      // Планируем только ближайшие 7 календарных дней.
-      if (daysUntil > 6) continue;
-
-      final targetDate = today.add(Duration(days: daysUntil));
+      final day = _dayForWeekday(schedule.days, targetDate.weekday);
+      if (day == null) continue;
 
       final requiredWeek = _weekForDate(
         targetDate,
@@ -955,12 +969,12 @@ class NotificationService {
           '$subject$room';
 
       await _plugin.zonedSchedule(
-        id: _notificationIdBase + weekday,
+        id: _notificationIdBase + offset,
         title: 'Первая пара — ${day.dayName}',
         body: body,
         scheduledDate: notificationTime,
         notificationDetails: _reminderDetails,
-        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+        androidScheduleMode: scheduleMode,
       );
 
       // Не выводим персональные данные или содержимое расписания в логи.

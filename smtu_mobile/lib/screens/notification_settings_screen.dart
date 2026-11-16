@@ -98,6 +98,14 @@ class _NotificationSettingsScreenState
 
     await _service.setEnabled(value);
 
+    // Включение само по себе ничего не планировало: если из настроек уйти,
+    // не трогая ползунок, напоминаний бы не было вовсе.
+    if (value) {
+      final schedule = await _service.resolveSchedule();
+
+      if (schedule != null) await _service.syncSchedule(schedule);
+    }
+
     if (!mounted) return;
 
     setState(() {

@@ -375,14 +375,6 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
 
         if (matchedGroup != null) {
           await _loadSchedule(matchedGroup);
-
-          // Кэшируем только расписание группы самого студента.
-          final schedule = _schedule;
-
-          if (schedule != null && schedule.pageId == matchedGroup.pageId) {
-            await _cache.saveGroup(matchedGroup);
-            await _cache.saveSchedule(schedule);
-          }
         } else {
           debugPrint(
             '[SCHEDULE] Group $studentGroup not found in public groups',
@@ -516,6 +508,12 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
         _loadingSchedule = false;
         _weekFilter = _preferredWeek(schedule);
       });
+
+      // Запоминаем расписание любой открытой группы, а не только группы
+      // авторизованного студента: иначе при следующем запуске без интернета
+      // показать будет нечего.
+      await _cache.saveGroup(group);
+      await _cache.saveSchedule(schedule);
 
       await _notificationService.syncSchedule(schedule);
     } catch (e) {
@@ -726,7 +724,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       ),
       body: !_isOnline && _schedule == null
           ? _OfflineView(onRetry: _retryConnection)
-          : _loadingGroups
+          : _loadingGroups && _schedule == null
           ? const Center(child: CircularProgressIndicator())
           : _error != null && _selectedGroup == null
           ? _ErrorView(message: _error!, onRetry: _loadGroups)
