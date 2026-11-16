@@ -19,7 +19,7 @@
     <!-- Экран будильника поверх блокировки через full-screen intent. -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
     <application
-        android:label="ISU mobile"
+        android:label="ISU Mobile"
         android:name="${applicationName}"
         android:icon="@mipmap/launcher_icon">
         <activity
