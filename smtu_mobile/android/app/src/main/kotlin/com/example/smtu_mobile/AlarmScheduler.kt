@@ -1,6 +1,7 @@
 package com.example.smtu_mobile
 
 import android.app.AlarmManager
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -18,7 +19,6 @@ object AlarmScheduler {
 
     private const val PREFS = "scheduled_alarms"
     private const val KEY = "alarms"
-    private const val WEEK_MILLIS = 7L * 24 * 60 * 60 * 1000
     private const val MAX_ALARMS = 16
 
     data class Alarm(
@@ -36,43 +36,47 @@ object AlarmScheduler {
         return manager.canScheduleExactAlarms()
     }
 
+    /// Android 14+ может отключать полноэкранные уведомления: без этого
+    /// разрешения экран будильника поверх блокировки не покажется.
+    fun canUseFullScreenIntent(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return true
+
+        val manager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        return manager.canUseFullScreenIntent()
+    }
+
     /// Ставит будильники и сохраняет план, чтобы восстановить его после
     /// перезагрузки. Возвращает true, если удалось поставить все будильники.
+    ///
+    /// Без разрешения на точные будильники ничего не ставим: неточный
+    /// сигнал для пары бесполезен, а проблему лучше показать пользователю.
     fun schedule(context: Context, alarms: List<Alarm>): Boolean {
+        if (!canScheduleExact(context)) return false
+
         cancelAll(context)
 
         val manager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val exact = canScheduleExact(context)
-        var scheduled = 0
+        val placed = mutableListOf<Alarm>()
 
         for (alarm in alarms) {
             val pending = pendingIntent(context, alarm.id, alarm.message)
-            val ok = try {
-                if (exact) {
-                    manager.setAlarmClock(
-                        AlarmManager.AlarmClockInfo(alarm.triggerAtMillis, pending),
-                        pending,
-                    )
-                } else {
-                    // Без разрешения на точные будильники система может
-                    // сдвинуть сигнал, но он не потеряется.
-                    manager.setAndAllowWhileIdle(
-                        AlarmManager.RTC_WAKEUP,
-                        alarm.triggerAtMillis,
-                        pending,
-                    )
-                }
-                true
-            } catch (_: Exception) {
-                false
-            }
 
-            if (ok) scheduled++
+            try {
+                manager.setAlarmClock(
+                    AlarmManager.AlarmClockInfo(alarm.triggerAtMillis, pending),
+                    pending,
+                )
+                placed.add(alarm)
+            } catch (_: Exception) {
+                // Разрешение могли отозвать между проверкой и установкой.
+            }
         }
 
-        save(context, alarms)
+        save(context, placed)
 
-        return scheduled == alarms.size
+        return placed.size == alarms.size
     }
 
     fun cancelAll(context: Context) {
@@ -95,25 +99,32 @@ object AlarmScheduler {
 
     /// Переустанавливает будильники из сохранённого плана. AlarmManager
     /// очищается при выключении телефона, поэтому это нужно после загрузки.
+    ///
+    /// Верхняя и нижняя недели чередуются, поэтому прошедшие даты нельзя
+    /// переносить на неделю вперёд: восстанавливаем только те будильники,
+    /// которые ещё не сработали.
     fun rescheduleFromStorage(context: Context) {
         val stored = load(context)
 
         if (stored.isEmpty()) return
 
         val now = System.currentTimeMillis()
+        val future = stored
+            .filter { it.triggerAtMillis > now }
+            .sortedBy { it.triggerAtMillis }
 
-        // План недельный: прошедшие времена переносим на следующую неделю.
-        val shifted = stored.map { alarm ->
-            var trigger = alarm.triggerAtMillis
-
-            while (trigger <= now) {
-                trigger += WEEK_MILLIS
-            }
-
-            alarm.copy(triggerAtMillis = trigger)
+        if (future.isEmpty()) {
+            // Всё, что было запланировано, уже прошло: чистим план, новый
+            // построит приложение при следующей загрузке расписания.
+            save(context, emptyList())
+            return
         }
 
-        schedule(context, shifted)
+        // Без разрешения на точные будильники план сохраняем: его можно
+        // восстановить, когда пользователь выдаст разрешение.
+        if (!canScheduleExact(context)) return
+
+        schedule(context, future)
     }
 
     fun save(context: Context, alarms: List<Alarm>) {

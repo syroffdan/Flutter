@@ -343,6 +343,18 @@ class NotificationService {
     return SystemAlarmService.instance.requestExactAlarmPermission();
   }
 
+  /// Доступны ли полноэкранные уведомления (Android 14+). Без них экран
+  /// будильника поверх блокировки не покажется.
+  Future<bool> canUseFullScreenIntent() {
+    return SystemAlarmService.instance.canUseFullScreenIntent();
+  }
+
+  /// Открывает настройки полноэкранных уведомлений. Возвращает true,
+  /// когда разрешение уже выдано.
+  Future<bool> requestFullScreenIntentPermission() {
+    return SystemAlarmService.instance.requestFullScreenIntentPermission();
+  }
+
   /// Удаляет созданные будильники из системы и очищает сохранённый план.
   /// Ручные изменения времени и удалённые дни сбрасываются.
   Future<void> deleteWeeklyAlarms() async {

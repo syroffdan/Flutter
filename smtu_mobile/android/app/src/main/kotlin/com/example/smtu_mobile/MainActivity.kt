@@ -89,6 +89,12 @@ class MainActivity : FlutterActivity() {
                 "requestExactAlarmPermission" -> {
                     result.success(requestExactAlarmPermission())
                 }
+                "canUseFullScreenIntent" -> {
+                    result.success(AlarmScheduler.canUseFullScreenIntent(this))
+                }
+                "requestFullScreenIntentPermission" -> {
+                    result.success(requestFullScreenIntentPermission())
+                }
                 "cancelAlarms" -> {
                     try {
                         cancelAlarms()
@@ -104,6 +110,17 @@ class MainActivity : FlutterActivity() {
                 "scheduleAlarms" -> {
                     val alarms = call.argument<List<Map<String, Any?>>>("alarms")
                         ?: emptyList()
+
+                    // Без точных будильников не ставим ничего и явно
+                    // сообщаем причину вместо тихого сдвига сигнала.
+                    if (alarms.isNotEmpty() && !AlarmScheduler.canScheduleExact(this)) {
+                        result.error(
+                            "exact_alarm_denied",
+                            "нет разрешения «Будильники и напоминания»",
+                            null,
+                        )
+                        return@setMethodCallHandler
+                    }
 
                     try {
                         result.success(scheduleAlarms(alarms))
@@ -143,6 +160,39 @@ class MainActivity : FlutterActivity() {
                 startActivity(
                     Intent(
                         Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                        Uri.parse("package:$packageName"),
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                return false
+            } catch (_: Exception) {
+                // На части прошивок такого экрана нет.
+            }
+        }
+
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName"),
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        } catch (_: Exception) {
+            return false
+        }
+
+        return false
+    }
+
+    /// Открывает настройки полноэкранных уведомлений (Android 14+).
+    /// Возвращает true, если разрешение уже выдано или не требуется.
+    private fun requestFullScreenIntentPermission(): Boolean {
+        if (AlarmScheduler.canUseFullScreenIntent(this)) return true
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
                         Uri.parse("package:$packageName"),
                     ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )

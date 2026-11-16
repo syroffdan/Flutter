@@ -82,6 +82,38 @@ class SystemAlarmService {
     }
   }
 
+  /// Доступны ли полноэкранные уведомления (Android 14+). Без них экран
+  /// будильника поверх блокировки не покажется.
+  Future<bool> canUseFullScreenIntent() async {
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'canUseFullScreenIntent',
+      );
+
+      return result ?? true;
+    } on PlatformException {
+      return true;
+    } on MissingPluginException {
+      return true;
+    }
+  }
+
+  /// Открывает настройки полноэкранных уведомлений. Возвращает true,
+  /// если разрешение уже выдано и переходить никуда не нужно.
+  Future<bool> requestFullScreenIntentPermission() async {
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'requestFullScreenIntentPermission',
+      );
+
+      return result ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   /// Открывает системные настройки, где приложению разрешают работу
   /// в фоне (исключение из оптимизации батареи). Возвращает true, если
   /// разрешение уже выдано и показывать настройки не понадобилось.

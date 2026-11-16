@@ -177,6 +177,21 @@ class _NotificationSettingsScreenState
       return;
     }
 
+    // Android 14+ может не показывать экран будильника поверх блокировки
+    // без отдельного разрешения на полноэкранные уведомления.
+    final fullScreenGranted = await _service.requestFullScreenIntentPermission();
+
+    if (!mounted) return;
+
+    if (!fullScreenGranted) {
+      _showMessage(
+        'Разрешите полноэкранные уведомления в настройках Android, '
+        'затем включите автосоздание снова: иначе экран будильника '
+        'не появится.',
+      );
+      return;
+    }
+
     await _service.setAlarmMinutesBefore(minutes);
     await _service.setAlarmsEnabled(true);
 
