@@ -4,6 +4,7 @@ import 'screens/notification_settings_screen.dart';
 import 'screens/schedule_screen.dart';
 import 'services/auth_service.dart';
 import 'services/notification_service.dart';
+import 'services/theme_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,6 +18,9 @@ Future<void> main() async {
     );
   } catch (_) {}
 
+  // Тема применяется с первого кадра, чтобы не было мигания светлой.
+  await ThemeService.instance.load();
+
   runApp(const SMTUApp());
 
   // Возвращаем в шторку уведомление о ближайшем будильнике после перезапуска.
@@ -28,14 +32,27 @@ class SMTUApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'SMTU',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF164B78)),
-        useMaterial3: true,
+    return ListenableBuilder(
+      listenable: ThemeService.instance,
+      builder: (context, _) => MaterialApp(
+        title: 'SMTU',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xFF164B78),
+          ),
+          useMaterial3: true,
+        ),
+        darkTheme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xFF164B78),
+            brightness: Brightness.dark,
+          ),
+          useMaterial3: true,
+        ),
+        themeMode: ThemeService.instance.mode,
+        home: const StartupScreen(),
       ),
-      home: const StartupScreen(),
     );
   }
 }

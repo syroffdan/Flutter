@@ -11,6 +11,7 @@ import 'profile_screen.dart';
 import '../services/auth_service.dart';
 import '../models/schedule_models.dart';
 import '../services/smtu_api.dart';
+import '../services/theme_service.dart';
 
 // Если LoginScreen находится в этом файле
 
@@ -327,6 +328,17 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
     if (!mounted || _schedule == null) return;
 
     await _notificationService.syncSchedule(_schedule!);
+  }
+
+  IconData _themeIcon(ThemeMode mode) {
+    switch (mode) {
+      case ThemeMode.light:
+        return Icons.light_mode_outlined;
+      case ThemeMode.dark:
+        return Icons.dark_mode_outlined;
+      case ThemeMode.system:
+        return Icons.brightness_auto_outlined;
+    }
   }
 
   Future<void> _openProfile() async {
@@ -657,6 +669,30 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
             tooltip: 'Обновить',
             onPressed: _loadingSchedule || _loadingGroups ? null : _refresh,
             icon: const Icon(Icons.refresh),
+          ),
+          ListenableBuilder(
+            listenable: ThemeService.instance,
+            builder: (context, _) {
+              final mode = ThemeService.instance.mode;
+
+              return PopupMenuButton<ThemeMode>(
+                tooltip: 'Тема оформления',
+                icon: Icon(_themeIcon(mode)),
+                initialValue: mode,
+                onSelected: ThemeService.instance.setMode,
+                itemBuilder: (context) => const [
+                  PopupMenuItem(
+                    value: ThemeMode.system,
+                    child: Text('Как в системе'),
+                  ),
+                  PopupMenuItem(
+                    value: ThemeMode.light,
+                    child: Text('Светлая'),
+                  ),
+                  PopupMenuItem(value: ThemeMode.dark, child: Text('Тёмная')),
+                ],
+              );
+            },
           ),
           IconButton(
             tooltip: 'Настройки уведомлений',
